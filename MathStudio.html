@@ -1806,47 +1806,44 @@ function App(){
           {busy&&<div className="ld"><div className="lds"/>İşleniyor...</div>}
           {cleaning&&<div className="ld"><div className="lds"/>Temizleniyor...</div>}
           <div className="stabs" style={{marginBottom:8}}>
-            <button className={`st${uploadSub==="draw"?" on":""}`} onClick={()=>setUploadSub("draw")}>✏️ Elle Çizim</button>
+            <button className={`st${uploadSub==="draw"?" on":""}`} onClick={()=>{setUploadSub("draw");closeCam();}}>✏️ Elle Çizim</button>
             <button className={`st${uploadSub==="cam"?" on":""}`} onClick={()=>setUploadSub("cam")}>📷 Kamera</button>
-            <button className={`st${uploadSub==="file"?" on":""}`} onClick={()=>setUploadSub("file")}>📁 Dosyalar</button>
-            <button className={`st${uploadSub==="txt"?" on":""}`} onClick={()=>setUploadSub("txt")}>📝 Metin</button>
+            <button className={`st${uploadSub==="file"?" on":""}`} onClick={()=>{setUploadSub("file");closeCam();}}>📁 Dosyalar</button>
+            <button className={`st${uploadSub==="txt"?" on":""}`} onClick={()=>{setUploadSub("txt");closeCam();}}>📝 Metin</button>
           </div>
+
           {uploadSub==="draw"&&<div>
             <Canvas onDone={recognizeFromCanvas} busy={busy} onAddAsImage={addFromCanvas}/>
           </div>}
+
           {uploadSub==="cam"&&<div>
             {camOn?<div style={{display:"flex",flexDirection:"column",gap:8}}>
               <div style={{position:"relative",borderRadius:10,overflow:"hidden",background:"#000"}}>
                 <video ref={videoRef} playsInline autoPlay muted style={{width:"100%",maxHeight:280,display:"block",objectFit:"cover"}}/>
                 <button onClick={closeCam} style={{position:"absolute",top:6,right:6,width:30,height:30,borderRadius:"50%",background:"rgba(220,40,40,.85)",border:"none",color:"#fff",fontSize:16,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
               </div>
-              <div style={{display:"flex",gap:4}}>
-                {[["text","📝 Yazı"],["img","🖼️ Resim"],["book","📖 Ders Notu"]].map(([k,l])=>
-                  <button key={k} onClick={()=>setCamAct(k)} style={{flex:1,padding:"8px 4px",border:camAct===k?"1.5px solid #1b2a4a":"1.5px solid #d8dce6",background:camAct===k?"#eef3ff":"#fff",borderRadius:6,fontFamily:"inherit",fontSize:10,fontWeight:camAct===k?700:400,cursor:"pointer",color:camAct===k?"#1b2a4a":"#666"}}>{l}</button>
-                )}
-              </div>
-              <button className={`bup${busy||cleaning?" wait":""}`} disabled={busy||cleaning} onClick={snapAndProcess} style={{width:"100%",justifyContent:"center",padding:"14px 20px",fontSize:13,background:"#1b2a4a",color:"#fff",borderColor:"#1b2a4a"}}>
-                {busy?"⏳ Çevriliyor...":cleaning?"⏳ Ekleniyor...":"📸 Fotoğraf Çek"}
-              </button>
-              {busy&&<div className="ld"><div className="lds"/>Soru okunuyor...</div>}
-              {cleaning&&<div className="ld"><div className="lds"/>Temizleniyor...</div>}
-            </div>:
-            <div>
-              <button className="bup" onClick={()=>openCam("text")} style={{width:"100%",justifyContent:"center",padding:"14px 20px",fontSize:13,marginBottom:8}}>📷 Kamerayı Aç</button>
-              <p style={{fontSize:10,color:"#999",textAlign:"center",marginBottom:10}}>veya dosyadan seçin:</p>
               <div className="scan-btns">
-                <label className={`bup${busy?" wait":""}`}>{busy?"⏳ Çevriliyor...":"📄 Dosya → Yazıya Çevir"}<input type="file" accept="image/*" capture="environment" multiple hidden disabled={busy} onChange={scan}/></label>
-                <label className={`bup bup3${cleaning?" wait":""}`}>{cleaning?"⏳ Ekleniyor...":"🖼️ Dosya → Resim Ekle"}<input type="file" accept="image/*" capture="environment" multiple hidden disabled={cleaning} onChange={scanImg}/></label>
+                <button className={`bup${busy?" wait":""}`} disabled={busy} onClick={()=>{setCamAct("text");snapAndProcess();}}>
+                  {busy?"⏳ Çevriliyor...":"📝 Yazıya Çevir"}
+                </button>
+                <button className={`bup bup3${cleaning?" wait":""}`} disabled={cleaning} onClick={()=>{setCamAct("img");snapAndProcess();}}>
+                  {cleaning?"⏳ Ekleniyor...":"🖼️ Resim Olarak Ekle"}
+                </button>
               </div>
+            </div>:
+            <div style={{textAlign:"center",padding:"16px 0"}}>
+              <button className="bup" onClick={()=>openCam("text")} style={{width:"100%",justifyContent:"center",padding:"14px 20px",fontSize:13}}>📷 Kamerayı Aç</button>
+              <p style={{fontSize:10,color:"#999",marginTop:6}}>Sorunun fotoğrafını çekin, sonra ne yapacağınızı seçin</p>
             </div>}
           </div>}
+
           {uploadSub==="file"&&<div>
             <div className="scan-btns">
-              <label className={`bup${busy?" wait":""}`}>{busy?"⏳ Çevriliyor...":"📄 Seç ve Yazıya Çevir"}<input type="file" accept="image/*" multiple hidden disabled={busy} onChange={scan}/></label>
-              <label className={`bup bup3${cleaning?" wait":""}`}>{cleaning?"⏳ Ekleniyor...":"🖼️ Seç ve Resim Ekle"}<input type="file" accept="image/*" multiple hidden disabled={cleaning} onChange={scanImg}/></label>
-              <label className={`bup bup4${busy?" wait":""}`}>{busy?"⏳ Düzenleniyor...":"📖 Seç ve Ders Notu Yap"}<input type="file" accept="image/*" multiple hidden disabled={busy} onChange={scanBook}/></label>
+              <label className={`bup${busy?" wait":""}`}>{busy?"⏳ Çevriliyor...":"📝 Seç ve Yazıya Çevir"}<input type="file" accept="image/*" multiple hidden disabled={busy} onChange={scan}/></label>
+              <label className={`bup bup3${cleaning?" wait":""}`}>{cleaning?"⏳ Ekleniyor...":"🖼️ Seç ve Resim Olarak Ekle"}<input type="file" accept="image/*" multiple hidden disabled={cleaning} onChange={scanImg}/></label>
             </div>
           </div>}
+
           {uploadSub==="txt"&&<div>
             <div style={{display:"flex",gap:6,alignItems:"flex-start"}}>
               <textarea className="p-ta" value={txt} onChange={e=>setTxt(e.target.value)} rows={3} placeholder="Soruyu klavyeden yazın..."/>
