@@ -30,23 +30,21 @@ const FONTS=[
 const GF="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=STIX+Two+Text:wght@400;700&family=Lora:wght@400;700&family=Merriweather:wght@400;700&family=Source+Serif+4:wght@400;700&family=Noto+Serif:wght@400;700&family=EB+Garamond:wght@400;700&family=Crimson+Pro:wght@400;700&family=Libre+Baskerville:wght@400;700&display=swap";
 
 
-let GEMINI_KEY="";
+const GEMINI_KEY="AIzaSyCrTP8wpXTB258ZrZvwmhRggdv8THX1_Bo";
 
 async function callAI(content){
-  if(!GEMINI_KEY)throw new Error("API key girilmedi. Ayarlardan API key girin.");
-  const _t=ms=>new Promise((_,r)=>setTimeout(()=>r(new Error("Zaman aşımı")),ms));
   const parts=[];
   for(const c of content){
     if(c.type==="text") parts.push({text:c.text});
     else if(c.type==="image") parts.push({inlineData:{mimeType:c.source.media_type,data:c.source.data}});
   }
-  const r=await Promise.race([fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,{
+  const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,{
     method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({contents:[{parts}]})}),_t(60000)]);
+    body:JSON.stringify({contents:[{parts}]})
+  });
   if(!r.ok){
     const err=await r.json().catch(()=>({}));
     if(r.status===429)throw new Error("API limiti doldu. Birkaç dakika bekleyip tekrar deneyin.");
-    if(r.status===400)throw new Error("API key geçersiz. Ayarlardan doğru key girin.");
     throw new Error("Bağlantı hatası ("+r.status+")");
   }
   const d=await r.json();
@@ -1338,15 +1336,29 @@ function cleanImage(file){
       // Threshold = midpoint between background and pure black
       const thresh=bgGray*0.65;
       
-      // Step 2: Arka plan şeffaf, yazı siyah
+      // Step 2: Process each pixel
       for(let i=0;i<d.length;i+=4){
         const r=d[i],g=d[i+1],b=d[i+2];
         const gray=r*0.299+g*0.587+b*0.114;
-        const diffR=Math.abs(r-bgR),diffG=Math.abs(g-bgG),diffB=Math.abs(b-bgB);
+        
+        // How close is this pixel to the background color?
+        const diffR=Math.abs(r-bgR);
+        const diffG=Math.abs(g-bgG);
+        const diffB=Math.abs(b-bgB);
         const bgDist=Math.sqrt(diffR*diffR+diffG*diffG+diffB*diffB);
-        if(bgDist<80){d[i]=0;d[i+1]=0;d[i+2]=0;d[i+3]=0;}
-        else if(gray>thresh){const fade=Math.min(1,(gray-thresh)/(bgGray-thresh));d[i]=0;d[i+1]=0;d[i+2]=0;d[i+3]=Math.round(255*(1-fade));}
-        else{d[i+3]=Math.round(Math.min(255,(1-gray/255)*400));d[i]=Math.round(r*0.2);d[i+1]=Math.round(g*0.2);d[i+2]=Math.round(b*0.2);}
+        
+        if(bgDist<80){
+          // Very close to background → pure white
+          d[i]=255;d[i+1]=255;d[i+2]=255;
+        }else if(gray>thresh){
+          // Lighter than threshold but not background → fade to white
+          const fade=Math.min(1,(gray-thresh)/(bgGray-thresh));
+          d[i]=Math.round(r+(255-r)*fade);
+          d[i+1]=Math.round(g+(255-g)*fade);
+          d[i+2]=Math.round(b+(255-b)*fade);
+        }
+        // Dark pixels stay as they are
+        d[i+3]=255;
       }
       
       // Step 3: Clean edges - very generous border cleaning
@@ -1356,7 +1368,7 @@ function cleanImage(file){
         for(let x=0;x<w;x++){
           if(x<edgeX||x>=w-edgeX||y<edgeY||y>=h-edgeY){
             const i=(y*w+x)*4;
-            d[i]=0;d[i+1]=0;d[i+2]=0;d[i+3]=0;
+            d[i]=255;d[i+1]=255;d[i+2]=255;d[i+3]=255;
           }
         }
       }
@@ -1371,14 +1383,14 @@ function cleanImage(file){
           );
           if(inCorner){
             const i=(y*w+x)*4;
-            d[i]=0;d[i+1]=0;d[i+2]=0;d[i+3]=0;
+            d[i]=255;d[i+1]=255;d[i+2]=255;d[i+3]=255;
           }
         }
       }
       
       // Step 4: Flood fill from edges - any dark pixel touching the border gets removed
       const isWhite=(i)=>d[i]===255&&d[i+1]===255&&d[i+2]===255;
-      const makeWhite=(i)=>{d[i]=0;d[i+1]=0;d[i+2]=0;d[i+3]=0;};
+      const makeWhite=(i)=>{d[i]=255;d[i+1]=255;d[i+2]=255;d[i+3]=255;};
       const gray=(i)=>d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114;
       
       // Scan left edge inward - remove dark strips
@@ -1660,50 +1672,9 @@ function App(){
   const[drawMode,setDrawMode]=useState(false);
   const[uploadMode,setUploadMode]=useState(false);
   const[uploadSub,setUploadSub]=useState("draw");
-  const[apiKey,setApiKey]=useState("");
-  const[showKeyInput,setShowKeyInput]=useState(false);
-  // Sayfa açılınca kaydedilmiş key'i yükle
-  useEffect(()=>{
-    try{const k=localStorage.getItem("ms_gemini_key");if(k){setApiKey(k);GEMINI_KEY=k;}}catch(e){}
-  },[]);
-  const saveApiKey=(k)=>{
-    const key=k.trim();setApiKey(key);GEMINI_KEY=key;
-    try{localStorage.setItem("ms_gemini_key",key);}catch(e){}
-    setShowKeyInput(false);setErr("");
-  };
   const camRef=useRef();const fileRef=useRef();
-  const videoRef=useRef();const camStream=useRef(null);
-  const[camOn,setCamOn]=useState(false);const[camAct,setCamAct]=useState("text");
   const pvRef=useRef();
   const ff=(FONTS.find(f=>f.id===font)||FONTS[0]).f;
-
-  const openCam=async(act)=>{setCamAct(act);setErr("");
-    try{if(camStream.current)camStream.current.getTracks().forEach(t=>t.stop());
-      const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment",width:{ideal:1920},height:{ideal:1080}},audio:false});
-      camStream.current=s;setCamOn(true);
-      setTimeout(()=>{if(videoRef.current){videoRef.current.srcObject=s;videoRef.current.play().catch(()=>{});}},80);
-    }catch(e){setErr("Kamera açılamadı. Dosyalardan resim seçebilirsiniz.");setCamOn(false);}
-  };
-  const closeCam=()=>{if(camStream.current){camStream.current.getTracks().forEach(t=>t.stop());camStream.current=null;}setCamOn(false);};
-  const snapAndProcess=async()=>{
-    if(!videoRef.current)return;
-    const v=videoRef.current,cv2=document.createElement("canvas");
-    cv2.width=v.videoWidth||1280;cv2.height=v.videoHeight||960;
-    cv2.getContext("2d").drawImage(v,0,0);
-    const du=cv2.toDataURL("image/jpeg",0.92);closeCam();
-    if(camAct==="text"||camAct==="book"){
-      setBusy(true);setErr("");
-      try{const b=du.split(",")[1],pr=camAct==="book"?PROMPT_BOOK:PROMPT_SCAN;
-        const raw=await callAI([{type:"image",source:{type:"base64",media_type:"image/jpeg",data:b}},{type:"text",text:pr}]);
-        const j=parseJ(raw);if(j.questions?.length){saveHistory();setQs(p=>[...p,...j.questions]);setShow(true);}
-      }catch(ex){setErr(ex.message);}setBusy(false);
-    }else{setCleaning(true);
-      try{const blob=await(await fetch(du)).blob();const file=new File([blob],"cam.jpg",{type:"image/jpeg"});
-        const cleaned=await cleanImage(file);saveHistory();setQs(p=>[...p,'<img src="'+cleaned+'" style="max-width:100%;height:auto"/>']);setShow(true);
-      }catch(e){saveHistory();setQs(p=>[...p,'<img src="'+du+'" style="max-width:100%;height:auto"/>']);setShow(true);}
-      setCleaning(false);}
-  };
-  useEffect(()=>()=>{if(camStream.current)camStream.current.getTracks().forEach(t=>t.stop());},[]);
 
   const saveHistory=()=>setHistory(p=>[...p.slice(-20),JSON.stringify(qs)]);
   const undo=()=>{if(!history.length)return;const prev=JSON.parse(history[history.length-1]);setQs(prev);setHistory(p=>p.slice(0,-1));if(prev.length)setShow(true);};
@@ -1732,24 +1703,9 @@ function App(){
   const addFromCanvas=(dataUrl)=>{saveHistory();setQs(p=>[...p,'<img src="'+dataUrl+'" style="max-width:100%;height:auto"/>']);setShow(true);setDrawMode(false);};
   const recognizeFromCanvas=async(dataUrl)=>{setBusy(true);setErr("");try{const b=dataUrl.split(",")[1],m=dataUrl.match(/^data:(image\/\w+);/)?.[1]||"image/png";const raw=await callAI([{type:"image",source:{type:"base64",media_type:m,data:b}},{type:"text",text:PROMPT_FORMULA}]);const j=parseJ(raw);if(j.results?.length){saveHistory();setQs(p=>[...p,...j.results.map(r=>r.text)]);setShow(true);setDrawMode(false);}else setErr("Tanınamadı.");}catch(e){setErr(e.message==="Failed to fetch"?"Bağlantı kurulamadı.":e.message);}setBusy(false);};
 
-  const printHtml=(title)=>`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title||"MathStudio"}</title><link href="${GF}" rel="stylesheet"><style>@page{size:A4;margin:0}*{box-sizing:border-box;margin:0;padding:0}body{margin:0}.pw-break{display:none}.pw-page{page-break-after:always}.pw-page:last-child{page-break-after:auto}.QTE,.QOA{background:none!important;box-shadow:none!important;border:none!important}.QOA:empty{display:none}.QSP,.QIS{display:none!important}${a4css(ff)}${mathCSS()}</style></head><body>${pvRef.current?.outerHTML||""}</body></html>`;
-  const doPrint=()=>{
-    const html=printHtml(cfg.konu);
-    // Yöntem 1: window.open
-    try{const w=window.open("","_blank");if(w){w.document.write(html);w.document.close();setTimeout(()=>w.print(),600);return;}}catch(e){}
-    // Yöntem 2: iframe (artifact sandbox'ta window.open engellenirse)
-    try{let f=document.getElementById("ms-print-frame");
-      if(!f){f=document.createElement("iframe");f.id="ms-print-frame";f.style.cssText="position:fixed;top:-9999px;left:-9999px;width:210mm;height:297mm;border:none;";document.body.appendChild(f);}
-      f.contentDocument.open();f.contentDocument.write(html);f.contentDocument.close();
-      setTimeout(()=>{try{f.contentWindow.print();}catch(e2){
-        // Yöntem 3: Blob indirme
-        const blob=new Blob([html],{type:"text/html"});const url=URL.createObjectURL(blob);
-        const a=document.createElement("a");a.href=url;a.download=(cfg.konu||"MathStudio")+"_Test.html";a.click();URL.revokeObjectURL(url);
-        setErr("Yazdırma engellendi. HTML dosyası indirildi — indirilen dosyayı tarayıcıda açıp Ctrl+P ile yazdırabilirsiniz.");
-      }},600);
-    }catch(e3){setErr("Yazdırma başarısız: "+e3.message);}
-  };
-  const savePDF=()=>doPrint();
+  const printHtml=(title)=>`<!DOCTYPE html><html><head><title>${title||"MathStudio"}</title><link href="${GF}" rel="stylesheet"><style>@page{size:A4;margin:0}*{box-sizing:border-box;margin:0;padding:0}body{margin:0}.pw-break{display:none}.pw-page{page-break-after:always}.pw-page:last-child{page-break-after:auto}.QTE,.QOA{background:none!important;box-shadow:none!important;border:none!important}.QOA:empty{display:none}.QSP,.QIS{display:none!important}${a4css(ff)}${mathCSS()}</style></head><body>${pvRef.current?.outerHTML||""}</body></html>`;
+  const print=()=>{const w=window.open("","_blank");if(!w)return;w.document.write(printHtml(cfg.konu));w.document.close();setTimeout(()=>w.print(),500);};
+  const savePDF=()=>{const w=window.open("","_blank");if(!w)return;w.document.write(printHtml(cfg.konu||"MathStudio"));w.document.close();setTimeout(()=>w.print(),500);};
 
   const Sec=({n,title,icon,children})=>(
     <div className="acc">
@@ -1760,20 +1716,8 @@ function App(){
 
   return(<div className="ms"><link href={GF} rel="stylesheet"/><style>{uicss()}{a4css("inherit")}{mathCSS()}</style>
     <header className="hd"><div className="hr"><div className="hl"><div className="hi">∑</div><b className="hn">MathStudio</b></div>
-      <div className="hd-acts">
-        <button className="hd-btn" onClick={()=>setShowKeyInput(!showKeyInput)} style={{background:apiKey?"#e8f5e9":"#fff5f5",borderColor:apiKey?"#4caf50":"#f44",color:apiKey?"#2e7d32":"#d44"}}>{apiKey?"🔑 Key ✓":"🔑 Key Gir"}</button>
-        {qs.length>0&&<><button className="hd-btn" onClick={doPrint}>🖨️</button><button className="hd-btn" onClick={savePDF}>📥 PDF</button></>}
-      </div>
-    </div>
-    {showKeyInput&&<div style={{padding:"10px 18px",background:"#fffdf5",borderBottom:"1px solid #fde68a"}}>
-      <p style={{fontSize:11,color:"#666",marginBottom:6}}>Google AI Studio'dan API key alın: <a href="https://aistudio.google.com/apikey" target="_blank" style={{color:"#2563eb"}}>aistudio.google.com/apikey</a></p>
-      <div style={{display:"flex",gap:6}}>
-        <input type="text" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="API key yapıştırın (AIzaSy...)" style={{flex:1,padding:"8px 12px",border:"1.5px solid #d8dce6",borderRadius:6,fontFamily:"monospace",fontSize:12}}/>
-        <button onClick={()=>saveApiKey(apiKey)} style={{padding:"8px 16px",background:"#1b2a4a",color:"#fff",border:"none",borderRadius:6,fontWeight:700,cursor:"pointer",fontSize:12}}>Kaydet</button>
-      </div>
-      {apiKey&&<p style={{fontSize:10,color:"#4caf50",marginTop:4}}>✓ Key kaydedildi. Tarayıcı hafızasında saklanır, kimse görmez.</p>}
-    </div>}
-    </header>
+      <div className="hd-acts">{qs.length>0&&<><button className="hd-btn" onClick={print}>🖨️</button><button className="hd-btn" onClick={savePDF}>📥 PDF</button></>}</div>
+    </div></header>
     <main className="mn2">
       <div className="panel">
         <Sec n={1} title="Döküman Şablonu" icon="📋">
@@ -1806,44 +1750,27 @@ function App(){
           {busy&&<div className="ld"><div className="lds"/>İşleniyor...</div>}
           {cleaning&&<div className="ld"><div className="lds"/>Temizleniyor...</div>}
           <div className="stabs" style={{marginBottom:8}}>
-            <button className={`st${uploadSub==="draw"?" on":""}`} onClick={()=>{setUploadSub("draw");closeCam();}}>✏️ Elle Çizim</button>
+            <button className={`st${uploadSub==="draw"?" on":""}`} onClick={()=>setUploadSub("draw")}>✏️ Elle Çizim</button>
             <button className={`st${uploadSub==="cam"?" on":""}`} onClick={()=>setUploadSub("cam")}>📷 Kamera</button>
-            <button className={`st${uploadSub==="file"?" on":""}`} onClick={()=>{setUploadSub("file");closeCam();}}>📁 Dosyalar</button>
-            <button className={`st${uploadSub==="txt"?" on":""}`} onClick={()=>{setUploadSub("txt");closeCam();}}>📝 Metin</button>
+            <button className={`st${uploadSub==="file"?" on":""}`} onClick={()=>setUploadSub("file")}>📁 Dosyalar</button>
+            <button className={`st${uploadSub==="txt"?" on":""}`} onClick={()=>setUploadSub("txt")}>📝 Metin</button>
           </div>
-
           {uploadSub==="draw"&&<div>
             <Canvas onDone={recognizeFromCanvas} busy={busy} onAddAsImage={addFromCanvas}/>
           </div>}
-
           {uploadSub==="cam"&&<div>
-            {camOn?<div style={{display:"flex",flexDirection:"column",gap:8}}>
-              <div style={{position:"relative",borderRadius:10,overflow:"hidden",background:"#000"}}>
-                <video ref={videoRef} playsInline autoPlay muted style={{width:"100%",maxHeight:280,display:"block",objectFit:"cover"}}/>
-                <button onClick={closeCam} style={{position:"absolute",top:6,right:6,width:30,height:30,borderRadius:"50%",background:"rgba(220,40,40,.85)",border:"none",color:"#fff",fontSize:16,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
-              </div>
-              <div className="scan-btns">
-                <button className={`bup${busy?" wait":""}`} disabled={busy} onClick={()=>{setCamAct("text");snapAndProcess();}}>
-                  {busy?"⏳ Çevriliyor...":"📝 Yazıya Çevir"}
-                </button>
-                <button className={`bup bup3${cleaning?" wait":""}`} disabled={cleaning} onClick={()=>{setCamAct("img");snapAndProcess();}}>
-                  {cleaning?"⏳ Ekleniyor...":"🖼️ Resim Olarak Ekle"}
-                </button>
-              </div>
-            </div>:
-            <div style={{textAlign:"center",padding:"16px 0"}}>
-              <button className="bup" onClick={()=>openCam("text")} style={{width:"100%",justifyContent:"center",padding:"14px 20px",fontSize:13}}>📷 Kamerayı Aç</button>
-              <p style={{fontSize:10,color:"#999",marginTop:6}}>Sorunun fotoğrafını çekin, sonra ne yapacağınızı seçin</p>
-            </div>}
-          </div>}
-
-          {uploadSub==="file"&&<div>
             <div className="scan-btns">
-              <label className={`bup${busy?" wait":""}`}>{busy?"⏳ Çevriliyor...":"📝 Seç ve Yazıya Çevir"}<input type="file" accept="image/*" multiple hidden disabled={busy} onChange={scan}/></label>
-              <label className={`bup bup3${cleaning?" wait":""}`}>{cleaning?"⏳ Ekleniyor...":"🖼️ Seç ve Resim Olarak Ekle"}<input type="file" accept="image/*" multiple hidden disabled={cleaning} onChange={scanImg}/></label>
+              <label className={`bup${busy?" wait":""}`}>{busy?"⏳ Çevriliyor...":"📷 Çek ve Yazıya Çevir"}<input type="file" accept="image/*" capture="environment" hidden disabled={busy} onChange={scan}/></label>
+              <label className={`bup bup3${cleaning?" wait":""}`}>{cleaning?"⏳ Ekleniyor...":"🖼️ Çek ve Resim Ekle"}<input type="file" accept="image/*" capture="environment" hidden disabled={cleaning} onChange={scanImg}/></label>
             </div>
           </div>}
-
+          {uploadSub==="file"&&<div>
+            <div className="scan-btns">
+              <label className={`bup${busy?" wait":""}`}>{busy?"⏳ Çevriliyor...":"📄 Seç ve Yazıya Çevir"}<input type="file" accept="image/*" multiple hidden disabled={busy} onChange={scan}/></label>
+              <label className={`bup bup3${cleaning?" wait":""}`}>{cleaning?"⏳ Ekleniyor...":"🖼️ Seç ve Resim Ekle"}<input type="file" accept="image/*" multiple hidden disabled={cleaning} onChange={scanImg}/></label>
+              <label className={`bup bup4${busy?" wait":""}`}>{busy?"⏳ Düzenleniyor...":"📖 Seç ve Ders Notu Yap"}<input type="file" accept="image/*" multiple hidden disabled={busy} onChange={scanBook}/></label>
+            </div>
+          </div>}
           {uploadSub==="txt"&&<div>
             <div style={{display:"flex",gap:6,alignItems:"flex-start"}}>
               <textarea className="p-ta" value={txt} onChange={e=>setTxt(e.target.value)} rows={3} placeholder="Soruyu klavyeden yazın..."/>
@@ -1929,7 +1856,7 @@ function a4css(ff){return`
 .QTE{outline:none;cursor:text;border-radius:3px;padding:2px 4px;margin:-2px -4px;transition:background .15s}
 .QTE:hover{background:rgba(37,99,235,.04)}
 .QTE:focus{background:rgba(37,99,235,.06);box-shadow:0 0 0 1.5px rgba(37,99,235,.2)}
-.QIM{width:100%;height:auto;display:block;background:transparent;border:none;outline:none;transition:transform .15s}
+.QIM{width:100%;height:auto;display:block;background:#fff;border:none;outline:none;transition:transform .15s}
 .QIG{position:relative;overflow:visible}
 .QIS{display:flex;align-items:center;gap:3px;position:absolute;top:2px;right:2px;z-index:5;background:rgba(255,255,255,.9);border:1px solid #dde;border-radius:4px;padding:2px 4px;opacity:.15;transition:opacity .15s}
 .QIG:hover .QIS{opacity:1}
