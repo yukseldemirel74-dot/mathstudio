@@ -30,9 +30,11 @@ const FONTS=[
 const GF="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=STIX+Two+Text:wght@400;700&family=Lora:wght@400;700&family=Merriweather:wght@400;700&family=Source+Serif+4:wght@400;700&family=Noto+Serif:wght@400;700&family=EB+Garamond:wght@400;700&family=Crimson+Pro:wght@400;700&family=Libre+Baskerville:wght@400;700&display=swap";
 
 
-const GEMINI_KEY="AIzaSyCrTP8wpXTB258ZrZvwmhRggdv8THX1_Bo";
+let GEMINI_KEY="";
+try{GEMINI_KEY=localStorage.getItem("ms_api_key")||"";}catch(e){}
 
 async function callAI(content){
+  if(!GEMINI_KEY){throw new Error("API key girilmedi! Sağ üstteki 🔑 butonuna basıp key girin.");}
   const parts=[];
   for(const c of content){
     if(c.type==="text") parts.push({text:c.text});
@@ -43,8 +45,8 @@ async function callAI(content){
     body:JSON.stringify({contents:[{parts}]})
   });
   if(!r.ok){
-    const err=await r.json().catch(()=>({}));
     if(r.status===429)throw new Error("API limiti doldu. Birkaç dakika bekleyip tekrar deneyin.");
+    if(r.status===400||r.status===403)throw new Error("API key geçersiz veya süresi dolmuş. Yeni key alıp 🔑 butonundan girin.");
     throw new Error("Bağlantı hatası ("+r.status+")");
   }
   const d=await r.json();
@@ -1672,6 +1674,9 @@ function App(){
   const[drawMode,setDrawMode]=useState(false);
   const[uploadMode,setUploadMode]=useState(false);
   const[uploadSub,setUploadSub]=useState("draw");
+  const[apiKey,setApiKey]=useState(GEMINI_KEY);
+  const[showKey,setShowKey]=useState(false);
+  const doSaveKey=()=>{const k=apiKey.trim();GEMINI_KEY=k;try{localStorage.setItem("ms_api_key",k);}catch(e){}setShowKey(false);setErr("");};
   const camRef=useRef();const fileRef=useRef();
   const pvRef=useRef();
   const ff=(FONTS.find(f=>f.id===font)||FONTS[0]).f;
@@ -1716,8 +1721,21 @@ function App(){
 
   return(<div className="ms"><link href={GF} rel="stylesheet"/><style>{uicss()}{a4css("inherit")}{mathCSS()}</style>
     <header className="hd"><div className="hr"><div className="hl"><div className="hi">∑</div><b className="hn">MathStudio</b></div>
-      <div className="hd-acts">{qs.length>0&&<><button className="hd-btn" onClick={print}>🖨️</button><button className="hd-btn" onClick={savePDF}>📥 PDF</button></>}</div>
-    </div></header>
+      <div className="hd-acts">
+        <button className="hd-btn" onClick={()=>setShowKey(!showKey)} style={{background:GEMINI_KEY?"#e8f5e9":"#fff0f0",color:GEMINI_KEY?"#2e7d32":"#c62828",borderColor:GEMINI_KEY?"#4caf50":"#ef9a9a"}}>{GEMINI_KEY?"🔑":"🔑 Key Gir"}</button>
+        {qs.length>0&&<><button className="hd-btn" onClick={print}>🖨️</button><button className="hd-btn" onClick={savePDF}>📥 PDF</button></>}
+      </div>
+    </div>
+    {showKey&&<div style={{padding:"12px 16px",background:"#fffde7",borderBottom:"2px solid #fdd835"}}>
+      <p style={{fontSize:11,color:"#555",marginBottom:8}}>Google AI Studio'dan ücretsiz API key alın: <a href="https://aistudio.google.com/apikey" target="_blank" style={{color:"#1565c0"}}>aistudio.google.com/apikey</a></p>
+      <div style={{display:"flex",gap:6}}>
+        <input value={apiKey} onChange={e=>{setApiKey(e.target.value);}} placeholder="API key yapıştırın..." style={{flex:1,padding:"10px",border:"2px solid #bbb",borderRadius:8,fontFamily:"monospace",fontSize:13}}/>
+        <button onClick={doSaveKey} style={{padding:"10px 20px",background:"#1b2a4a",color:"#fff",border:"none",borderRadius:8,fontWeight:700,cursor:"pointer",fontSize:13}}>Kaydet</button>
+      </div>
+      {GEMINI_KEY&&<p style={{fontSize:11,color:"#2e7d32",marginTop:6}}>✅ Key aktif — tarayıcınızda saklanır, kimse göremez.</p>}
+      {!GEMINI_KEY&&<p style={{fontSize:11,color:"#c62828",marginTop:6}}>⚠️ Key girilmedi — kamera ve dosya çevirme çalışmaz.</p>}
+    </div>}
+    </header>
     <main className="mn2">
       <div className="panel">
         <Sec n={1} title="Döküman Şablonu" icon="📋">
