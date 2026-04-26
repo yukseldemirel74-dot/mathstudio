@@ -34,19 +34,19 @@ let GEMINI_KEY="";
 try{GEMINI_KEY=localStorage.getItem("ms_api_key")||"";}catch(e){}
 
 async function callAI(content){
-  if(!GEMINI_KEY){throw new Error("API key girilmedi! Sağ üstteki 🔑 butonuna basıp key girin.");}
+  if(!GEMINI_KEY)throw new Error("API key girilmedi! Sağ üstteki 🔑 butonuna basıp key girin.");
   const parts=[];
   for(const c of content){
     if(c.type==="text") parts.push({text:c.text});
     else if(c.type==="image") parts.push({inlineData:{mimeType:c.source.media_type,data:c.source.data}});
   }
-  const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,{
+  const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,{
     method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({contents:[{parts}]})
   });
   if(!r.ok){
     if(r.status===429)throw new Error("API limiti doldu. Birkaç dakika bekleyip tekrar deneyin.");
-    if(r.status===400||r.status===403)throw new Error("API key geçersiz veya süresi dolmuş. Yeni key alıp 🔑 butonundan girin.");
+    if(r.status===400||r.status===403)throw new Error("API key geçersiz. Yeni key alıp 🔑 butonundan girin.");
     throw new Error("Bağlantı hatası ("+r.status+")");
   }
   const d=await r.json();
@@ -1727,13 +1727,12 @@ function App(){
       </div>
     </div>
     {showKey&&<div style={{padding:"12px 16px",background:"#fffde7",borderBottom:"2px solid #fdd835"}}>
-      <p style={{fontSize:11,color:"#555",marginBottom:8}}>Google AI Studio'dan ücretsiz API key alın: <a href="https://aistudio.google.com/apikey" target="_blank" style={{color:"#1565c0"}}>aistudio.google.com/apikey</a></p>
+      <p style={{fontSize:11,color:"#555",marginBottom:8}}>Google AI Studio key: <a href="https://aistudio.google.com/apikey" target="_blank" style={{color:"#1565c0"}}>aistudio.google.com/apikey</a></p>
       <div style={{display:"flex",gap:6}}>
-        <input value={apiKey} onChange={e=>{setApiKey(e.target.value);}} placeholder="API key yapıştırın..." style={{flex:1,padding:"10px",border:"2px solid #bbb",borderRadius:8,fontFamily:"monospace",fontSize:13}}/>
+        <input value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="API key yapıştırın..." style={{flex:1,padding:"10px",border:"2px solid #bbb",borderRadius:8,fontFamily:"monospace",fontSize:13}}/>
         <button onClick={doSaveKey} style={{padding:"10px 20px",background:"#1b2a4a",color:"#fff",border:"none",borderRadius:8,fontWeight:700,cursor:"pointer",fontSize:13}}>Kaydet</button>
       </div>
-      {GEMINI_KEY&&<p style={{fontSize:11,color:"#2e7d32",marginTop:6}}>✅ Key aktif — tarayıcınızda saklanır, kimse göremez.</p>}
-      {!GEMINI_KEY&&<p style={{fontSize:11,color:"#c62828",marginTop:6}}>⚠️ Key girilmedi — kamera ve dosya çevirme çalışmaz.</p>}
+      {GEMINI_KEY&&<p style={{fontSize:11,color:"#2e7d32",marginTop:6}}>✅ Key aktif</p>}
     </div>}
     </header>
     <main className="mn2">
