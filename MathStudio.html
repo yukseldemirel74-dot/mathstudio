@@ -7,6 +7,19 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<!-- KaTeX: Profesyonel matematik render'ı için (LaTeX desteği) -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/auto-render.min.js"></script>
+<script>
+  // PDF.js worker'ını yükle (klasik versiyon, daha güvenilir)
+  if (typeof pdfjsLib !== 'undefined') {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    window.pdfjsLib = pdfjsLib;
+  }
+</script>
 </head>
 <body>
 <div id="root"></div>
@@ -16,177 +29,280 @@ const { useState, useRef, useEffect, useCallback } = React;
 
 
 const FONTS=[
-  {id:"stix",n:"STIX Two Text",f:"'STIX Two Text',serif"},
-  {id:"times",n:"Times New Roman",f:"'Times New Roman',serif"},
-  {id:"cambria",n:"Cambria",f:"Cambria,Georgia,serif"},
-  {id:"lora",n:"Lora",f:"'Lora',serif"},
-  {id:"merri",n:"Merriweather",f:"'Merriweather',serif"},
-  {id:"source",n:"Source Serif",f:"'Source Serif 4',serif"},
-  {id:"noto",n:"Noto Serif",f:"'Noto Serif',serif"},
-  {id:"garamond",n:"EB Garamond",f:"'EB Garamond',serif"},
-  {id:"crimson",n:"Crimson Pro",f:"'Crimson Pro',serif"},
-  {id:"libre",n:"Libre Baskerville",f:"'Libre Baskerville',serif"},
+  {id:"stix",n:"STIX Two (modern matematik serif)",f:"'STIX Two Text','STIX Two Math','Times New Roman',serif"},
+  {id:"times",n:"Times New Roman + STIX",f:"'Times New Roman','STIX Two Text','Liberation Serif',serif"},
+  {id:"cambria",n:"Cambria (Office / MEB tarzı)",f:"Cambria,'Cambria Math','Georgia','Liberation Serif',serif"},
+  {id:"cmu",n:"Computer Modern (LaTeX)",f:"'CMU Serif','Latin Modern Roman','Computer Modern','Cardo','STIX Two Text',serif"},
 ];
-const GF="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=STIX+Two+Text:wght@400;700&family=Lora:wght@400;700&family=Merriweather:wght@400;700&family=Source+Serif+4:wght@400;700&family=Noto+Serif:wght@400;700&family=EB+Garamond:wght@400;700&family=Crimson+Pro:wght@400;700&family=Libre+Baskerville:wght@400;700&display=swap";
+const GF="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=STIX+Two+Text:wght@400;700&family=Cardo:wght@400;700&display=swap";
+// Computer Modern (LaTeX font) — dreampulse/computer-modern-web-font CDN
+const CMU_FONT_FACE=`
+@font-face{font-family:'CMU Serif';font-weight:400;font-style:normal;font-display:swap;src:url('https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-font@master/fonts/Serif/cmunrm.otf') format('opentype')}
+@font-face{font-family:'CMU Serif';font-weight:700;font-style:normal;font-display:swap;src:url('https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-font@master/fonts/Serif/cmunbx.otf') format('opentype')}
+@font-face{font-family:'CMU Serif';font-weight:400;font-style:italic;font-display:swap;src:url('https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-font@master/fonts/Serif/cmunti.otf') format('opentype')}
+@font-face{font-family:'CMU Serif';font-weight:700;font-style:italic;font-display:swap;src:url('https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-font@master/fonts/Serif/cmunbi.otf') format('opentype')}
+`;
 
 
 let GEMINI_KEY="";
 try{GEMINI_KEY=localStorage.getItem("ms_api_key")||"";}catch(e){}
 
-async function callAI(content){
+async function callAI(content,model){
   if(!GEMINI_KEY)throw new Error("API key girilmedi! Sağ üstteki 🔑 butonuna basıp key girin.");
   const parts=[];
   for(const c of content){
     if(c.type==="text") parts.push({text:c.text});
     else if(c.type==="image") parts.push({inlineData:{mimeType:c.source.media_type,data:c.source.data}});
   }
-  const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,{
-    method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({contents:[{parts}]})
-  });
-  if(!r.ok){
-    if(r.status===429)throw new Error("API limiti doldu. Birkaç dakika bekleyip tekrar deneyin.");
-    if(r.status===400||r.status===403)throw new Error("API key geçersiz. Yeni key alıp 🔑 butonundan girin.");
-    throw new Error("Bağlantı hatası ("+r.status+")");
+  const body=JSON.stringify({contents:[{parts}]});
+  // Otomatik tekrar deneme: 503/500/502 ve ağ hataları için exponential backoff
+  const maxRetries=4;
+  let lastError=null;
+  for(let attempt=0;attempt<maxRetries;attempt++){
+    try{
+      const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model||"gemini-2.5-flash-lite"}:generateContent?key=${GEMINI_KEY}`,{
+        method:"POST",headers:{"Content-Type":"application/json"},body
+      });
+      if(r.ok){
+        const d=await r.json();
+        if(d.error)throw new Error(d.error.message);
+        return d.candidates?.[0]?.content?.parts?.map(p=>p.text).join("")||"";
+      }
+      // Tekrar denenebilir hatalar (geçici sunucu sorunları)
+      if(r.status===503||r.status===500||r.status===502||r.status===504){
+        const wait=Math.pow(2,attempt)*1000+Math.random()*500; // 1s, 2s, 4s, 8s + jitter
+        if(attempt<maxRetries-1){
+          console.log(`Gemini ${r.status} - ${Math.round(wait/1000)}sn sonra tekrar deneniyor (${attempt+1}/${maxRetries})...`);
+          await new Promise(res=>setTimeout(res,wait));
+          continue;
+        }
+        throw new Error(`Gemini sunucusu meşgul (${r.status}). Birkaç saniye bekleyip tekrar deneyin.`);
+      }
+      // Tekrar denenemeyecek hatalar — hemen at
+      if(r.status===429)throw new Error("API limiti doldu. Birkaç dakika bekleyip tekrar deneyin.");
+      if(r.status===403)throw new Error("API key geçersiz veya yetkisiz. Yeni key alıp 🔑 butonundan girin.");
+      if(r.status===404)throw new Error("Model bulunamadı. Sayfayı yenileyin (Ctrl+F5).");
+      if(r.status===400){
+        let det="";try{const ed=await r.json();det=ed?.error?.message||"";}catch(e){}
+        throw new Error("İstek hatası: "+(det||"API key geçersiz olabilir, 🔑 butonundan kontrol edin."));
+      }
+      throw new Error("Bağlantı hatası ("+r.status+")");
+    }catch(e){
+      // Ağ hatası (Failed to fetch) gibi durumlarda da tekrar dene
+      lastError=e;
+      if(e.message&&(e.message.includes("Failed to fetch")||e.message.includes("NetworkError"))){
+        if(attempt<maxRetries-1){
+          await new Promise(res=>setTimeout(res,Math.pow(2,attempt)*1000));
+          continue;
+        }
+      }
+      throw e;
+    }
   }
-  const d=await r.json();
-  if(d.error)throw new Error(d.error.message);
-  return d.candidates?.[0]?.content?.parts?.map(p=>p.text).join("")||"";
+  throw lastError||new Error("Bağlantı kurulamadı");
+}
+// LaTeX \ işaretleri JSON'u bozar (\angle, \frac geçersiz escape) — JSON-safe yap
+function fixLatexEscapes(str){
+  // 1) Geçerli JSON kaçışı olmayan \X (örn. \l, \s) → \\X
+  let s=str.replace(/\\(?!["\\/bfnrtu])/g,'\\\\');
+  // 2) \t \f \b \r geçerli JSON kaçışı OLDUĞU için yukarıdaki kural atlıyor.
+  //    Ama harf takip ediyorsa muhtemelen LaTeX komutu (\to, \theta, \frac, \forall, \beta, \binom, \rho, \rightarrow).
+  //    Zaten escape edilmemişse (önünde tek sayıda \ varsa) double-escape ekle.
+  s=s.replace(/(\\*)\\([tfbr])(?=[a-zA-Z])/g,function(m,lead,ch){
+    return (lead.length%2===0) ? (lead+'\\\\'+ch) : m;
+  });
+  return s;
+}
+// Tırnaksız anahtar isimlerini tırnakla ({text: → {"text":)
+function quoteKeys(str){
+  return str.replace(/([{,]\s*)([a-zA-Z_$][\w$]*)(\s*:)/g,'$1"$2"$3');
 }
 function parseJ(r){
   let s=r.trim().replace(/^```(?:json)?\s*/i,"").replace(/\s*```$/i,"").trim();
   const i=s.indexOf("{");if(i<0)throw new Error("JSON yok");
-  s=s.slice(i);
-  // Kesik JSON düzeltme — eksik kapanış ekle
-  try{return JSON.parse(s);}catch(e){
-    // Kesik string'i kapat
-    let f=s;
-    // Açık string varsa kapat
+  const lastBrace=s.lastIndexOf("}");
+  s=(lastBrace>i)?s.slice(i,lastBrace+1):s.slice(i);
+  // Sırayla onarım denemeleri.
+  // ÖNEMLİ: Identity (x)=>x KALDIRILDI! AI \frac{x}{y} dönerse JSON.parse \f'yi form feed,
+  // \t'yi tab olarak yiyor (bozuk parse SESSİZCE başarılı oluyor) → her zaman önce fix uygula.
+  const attempts=[
+    (x)=>fixLatexEscapes(x),                        // LaTeX backslash fix
+    (x)=>fixLatexEscapes(quoteKeys(x)),             // + tırnaksız anahtar fix
+    (x)=>fixLatexEscapes(quoteKeys(x.replace(/'/g,'"'))) // + tek tırnak → çift
+  ];
+  for(const fn of attempts){
+    try{return JSON.parse(fn(s));}catch(e){}
+  }
+  // Kesik JSON onarımı
+  try{
+    let f=fixLatexEscapes(quoteKeys(s));
     const lastQuote=f.lastIndexOf('"');
     const beforeQuote=f.substring(0,lastQuote);
     const openQuotes=(beforeQuote.match(/(?<!\\)"/g)||[]).length;
     if(openQuotes%2!==0)f=f.substring(0,lastQuote)+'"';
-    // Son virgülü temizle
     f=f.replace(/,\s*$/,'');
-    // Eksik kapanışları ekle
     if(!f.includes(']'))f+='"]';
     if(!f.endsWith('}'))f+='}';
-    try{return JSON.parse(f);}catch(e2){
-      // Son çare — questions dizisini manuel çıkar
-      const matches=[...s.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map(m=>m[1].replace(/\\"/g,'"').replace(/\\\\/g,'\\'));
-      if(matches.length>1)return{questions:matches.slice(1)};
-      throw e;
-    }
+    return JSON.parse(f);
+  }catch(e2){
+    // Son çare — string'leri manuel çıkar
+    const matches=[...s.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map(m=>m[1].replace(/\\"/g,'"'));
+    if(matches.length>1)return{questions:matches.slice(1)};
+    throw new Error("JSON çözümlenemedi");
   }
 }
 
 const PROMPT_FORMULA=`Resimdeki el yazısı matematiksel ifadeyi BİREBİR bilgisayar yazısına çevir.
 KRİTİK: Gördüğünü AYNEN yaz. SADELEŞTİRME, YORUMLAMA, DEĞİŞTİRME. Resimde ne varsa o.
 
-HTML etiketleri:
-KESİR: <span class="mf"><span class="mfn">pay</span><span class="mfd">payda</span></span>
-LİMİT: <span class="ml"><span class="mlt">lim</span><span class="mlb">x→a</span></span>
-İNTEGRAL: <span class="mi"><span class="miu">üst</span><span class="mis">∫</span><span class="mil">alt</span></span>
-TOPLAM: <span class="ms"><span class="msu">n</span><span class="mss">Σ</span><span class="msl">k=1</span></span>
-KAREKÖK: <span class="mr"><span class="mrs">√</span><span class="mrc">ifade</span></span>
-KÜP KÖK: <span class="mr"><sup>3</sup><span class="mrs">√</span><span class="mrc">ifade</span></span>
-n. KÖK: <span class="mr"><sup>n</sup><span class="mrs">√</span><span class="mrc">ifade</span></span>
-ÜSLÜ: x<sup>2</sup>  ALT: a<sub>1</sub>
-PARÇALI: <span class="mp"><span class="mpb">{</span><span class="mpc"><span class="mpl">ifade1 , koşul1</span><span class="mpl">ifade2 , koşul2</span></span></span>
-MATRİS: <span class="mmx"><span class="mmxb">[</span><span class="mmxg"><span class="mmxr"><span class="mmxc">a</span><span class="mmxc">b</span></span><span class="mmxr"><span class="mmxc">c</span><span class="mmxc">d</span></span></span><span class="mmxb">]</span></span>
+MATEMATİK = LaTeX KULLAN — delimiter olarak inline için \\( \\) display için \\[ \\] kullan.
 
-ÖNEMLİ: Üs kısmı kesir ise kesir olarak yaz!
-Örnek: 2^(1/x) → 2<sup><span class="mf"><span class="mfn">1</span><span class="mfd">x</span></span></sup>
-Örnek: x^(2/3) → x<sup><span class="mf"><span class="mfn">2</span><span class="mfd">3</span></span></sup>
-Örnek: e^(-x²) → e<sup>−x²</sup>
-Örnek: a^(n+1) → a<sup>n+1</sup>
+Örnekler:
+- Kesir: 3/4 → \\( \\frac{3}{4} \\)
+- Kök: √25 → \\( \\sqrt{25} \\)
+- Karekök karmaşık: √(x²+1) → \\( \\sqrt{x^2+1} \\)
+- Küp kök: ³√27 → \\( \\sqrt[3]{27} \\)
+- n. kök: ⁵√(x+1) → \\( \\sqrt[5]{x+1} \\)
+- Üslü: x² → \\( x^2 \\), e^(x+1) → \\( e^{x+1} \\)
+- Alt simge: a₁ → \\( a_1 \\), x₀ → \\( x_0 \\)
+- Limit: lim x→3 (x²-9)/(x-3) → \\( \\lim_{x \\to 3} \\frac{x^2-9}{x-3} \\)
+- İntegral: ∫₀¹ x² dx → \\( \\int_0^1 x^2 \\, dx \\)
+- Toplam: Σ(k=1, n) k → \\( \\sum_{k=1}^{n} k \\)
+- Parçalı fonksiyon: f(x) = {3x+1, x<0; x², x≥0} → \\( f(x) = \\begin{cases} 3x+1, & x<0 \\\\ x^2, & x \\geq 0 \\end{cases} \\)
+- Matris: [a b; c d] → \\( \\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix} \\)
+- Türev: f'(x) → \\( f'(x) \\)
+- Yunan harfler: π θ α β → \\( \\pi, \\theta, \\alpha, \\beta \\)
+- Sonsuz: ∞ → \\( \\infty \\)
+- Mantıksal: ⇒ ⇔ ∈ → \\( \\Rightarrow, \\Leftrightarrow, \\in \\)
 
-Semboller: π θ α β γ δ ε ∞ ± × ÷ ≤ ≥ ≠ → Unicode kullan.
+ASLA \\sqrt() veya \\frac{}{} dışına çıkma — matematiksel ifadeyi DAİMA LaTeX olarak yaz.
+TÜRKÇE METİN düz Türkçe (LaTeX dışı), MATEMATİK kısmı LaTeX içinde olsun.
 
-text alanına HTML etiketli metin yaz. latex alanına LaTeX yaz.
-JSON: {"results":[{"text":"HTML metin","latex":"LaTeX"}]} Backtick KULLANMA.`;
+JSON formatı: {"results":[{"text":"Türkçe metin \\\\( LaTeX matematik \\\\) düz metin..."}]}
+Backtick veya markdown KULLANMA. Sadece JSON.`;
 
-/* ÖNEMLİ: AI'dan HTML döndürmesini istiyoruz */
+/* AI matematiksel kısımları LaTeX olarak çıkarır, KaTeX ile profesyonel render edilir */
 const PROMPT_SCAN=`Resimdeki matematik sorularını BİREBİR bilgisayar yazısına çevir.
-Matematiksel ifadeleri KİTAPTAKİ GİBİ göstermek için HTML etiketleri kullan:
+TÜRKÇE METİN normal yazılır, MATEMATİK kısımları LaTeX delimiter içinde yazılır.
 
-KESİR (pay üstte çizgi altta payda):
-<span class="mf"><span class="mfn">pay</span><span class="mfd">payda</span></span>
-Örnek: <span class="mf"><span class="mfn">x²−9</span><span class="mfd">x−3</span></span>
+LaTeX DELIMITER: Inline matematik için \\( \\), display için \\[ \\] kullan.
 
-LİMİT (lim yazısının ALTINDA x→a):
-<span class="ml"><span class="mlt">lim</span><span class="mlb">x→3</span></span>
-Örnek: <span class="ml"><span class="mlt">lim</span><span class="mlb">x→∞</span></span> <span class="mf"><span class="mfn">1</span><span class="mfd">x</span></span> = 0
+LaTeX ÖRNEKLERİ:
+- Kesir: (x²-9)/(x-3) → \\( \\frac{x^2-9}{x-3} \\)
+- Kök: √(x²+1) → \\( \\sqrt{x^2+1} \\)
+- Küp kök: ³√27 → \\( \\sqrt[3]{27} \\)
+- n. kök: ⁿ√x → \\( \\sqrt[n]{x} \\)
+- Üs/üslü: x², e^(x+1) → \\( x^2 \\), \\( e^{x+1} \\)
+- Alt simge: a₁, x₀ → \\( a_1 \\), \\( x_0 \\)
+- Limit: lim x→3 → \\( \\lim_{x \\to 3} \\)
+- İntegral: ∫₀¹ → \\( \\int_0^1 \\)
+- Toplam: Σ(k=1, n) → \\( \\sum_{k=1}^{n} \\)
+- Parçalı fonksiyon: f(x) = {3x+1 eğer x<0; x²+1 eğer x≥0}
+  → \\( f(x) = \\begin{cases} 3x+1, & x<0 \\\\ x^2+1, & x \\geq 0 \\end{cases} \\)
+- Matris: [[a,b],[c,d]] → \\( \\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix} \\)
+- Türev: f'(x) → \\( f'(x) \\), dy/dx → \\( \\frac{dy}{dx} \\)
+- Yunan: π θ α β → \\( \\pi, \\theta, \\alpha, \\beta \\)
+- Sonsuz: ∞ → \\( \\infty \\)
 
-İNTEGRAL (∫ sembolünün ALTINDA alt sınır ÜSTÜNDE üst sınır):
-<span class="mi"><span class="miu">üst</span><span class="mis">∫</span><span class="mil">alt</span></span>
-Örnek: <span class="mi"><span class="miu">1</span><span class="mis">∫</span><span class="mil">0</span></span> x² dx
+ÖRNEK SORU FORMATI:
+"Aşağıdaki ifadenin değeri kaçtır? \\( \\lim_{x \\to 2} \\frac{x^2 - 4}{x - 2} \\)
+A) 2  B) 4  C) 0  D) Belirsiz  E) Sonsuz"
 
-TOPLAM (Σ altında ve üstünde):
-<span class="ms"><span class="msu">n</span><span class="mss">Σ</span><span class="msl">k=1</span></span>
+KURALLAR:
+- Türkçe metin DÜZ yazılır (LaTeX dışı)
+- Tüm matematik ifadeleri \\( ... \\) içine alınır
+- Soruyu OLDUĞU GİBİ, eksiksiz yaz — soru numarası EKLEME
 
-KAREKÖK (√ işareti + üstten çizgi):
-<span class="mr"><span class="mrs">√</span><span class="mrc">ifade</span></span>
-Örnek: <span class="mr"><span class="mrs">√</span><span class="mrc">x²+1</span></span>
-
-KÜP KÖK (³√):
-<span class="mr"><sup>3</sup><span class="mrs">√</span><span class="mrc">ifade</span></span>
-Örnek: <span class="mr"><sup>3</sup><span class="mrs">√</span><span class="mrc">27</span></span>
-
-n. DERECEDEN KÖK (ⁿ√):
-<span class="mr"><sup>n</sup><span class="mrs">√</span><span class="mrc">ifade</span></span>
-
-ÜSLÜ: x<sup>2</sup>, x<sup>n+1</sup>, e<sup>−x</sup>
-ALT SİMGE: a<sub>1</sub>, a<sub>n</sub>, x<sub>0</sub>
-PARÇALI: <span class="mp"><span class="mpb">{</span><span class="mpc"><span class="mpl">ifade , koşul</span></span></span>
-MATRİS: <span class="mmx"><span class="mmxb">[</span><span class="mmxg"><span class="mmxr"><span class="mmxc">a</span><span class="mmxc">b</span></span></span><span class="mmxb">]</span></span>
-
-DİĞER: π θ α β γ δ ε ∞ ± × ÷ ≤ ≥ ≠ ≈ → ⇒ ∈ ° ∠ ∥ ⊥ doğrudan Unicode kullan.
-
-ÖNEMLİ KURALLAR:
-- Soruyu OLDUĞU GİBİ, eksiksiz yaz
-- Soru numarası EKLEME  
-- Alt şıkları (a,b,c) varsa dahil et
+⚠️ TEK SORU = TEK ELEMAN: Resimdeki bir soruya ait HER ŞEY (soru metni, şıklar A/B/C/D/E, parantez içi notlar, cevap ipuçları, ek açıklamalar, "Cevap: X" gibi notlar) AYNI sorunun parçasıdır → questions array'inde TEK BİR string olarak yaz. Parantez içi ya da satır altı eklenmiş her şeyi de o soruya dahil et. Resimde gerçekten ayrı ayrı NUMARALANMIŞ birden fazla soru yoksa, array'de TEK eleman olmalı.
+- Alt şıkları (A, B, C, D, E) dahil et
 - Şekil varsa [Şekil: açıklama] yaz
-- Düz metin kısımlarını HTML etiketi OLMADAN yaz
-- Sadece matematiksel ifadelerde HTML etiket kullan
+- ASLA \\sqrt() yazma, DAİMA \\sqrt{} yaz (parantez DEĞİL, süslü parantez)
 
-JSON: {"questions":["soru1 html","soru2 html",...]}
+JSON: {"questions":["soru1 LaTeX/text mix","soru2",...]}
 Backtick veya markdown KULLANMA. Sadece JSON.`;
 
-const PROMPT_BOOK=`Resimdeki el yazısı matematik konu anlatımını profesyonel DERS KİTABI formatında düzenle.
+const PROMPT_BOOK=`Resimdeki el yazısı matematik konu anlatımını PROFESYONEL DERS KİTABI sayfası formatına çevir. Yapısal öğeleri TANI ve uygun HTML ile etiketle.
 
-MATEMATİK İFADELER İÇİN HTML ETİKETLERİ:
-KESİR: <span class="mf"><span class="mfn">pay</span><span class="mfd">payda</span></span>
-LİMİT: <span class="ml"><span class="mlt">lim</span><span class="mlb">x→a</span></span>
-İNTEGRAL: <span class="mi"><span class="miu">üst</span><span class="mis">∫</span><span class="mil">alt</span></span>
-TOPLAM: <span class="ms"><span class="msu">n</span><span class="mss">Σ</span><span class="msl">k=1</span></span>
-KAREKÖK: <span class="mr"><span class="mrs">√</span><span class="mrc">ifade</span></span>
-ÜSLÜ: x<sup>2</sup>  ALT SİMGE: a<sub>1</sub>
-Unicode: π θ α β γ δ ε ∞ ± × ÷ ≤ ≥ ≠ ≈ → ⇒ ∈ ° ∠ ∥ ⊥
+MATEMATİK İFADELER — LaTeX KULLAN (KaTeX render edecek):
+- Inline matematik: \\( ... \\) içine yaz
+- Display matematik (ortalı): \\[ ... \\] içine yaz
+- Kesir: \\( \\frac{pay}{payda} \\)
+- Kök: \\( \\sqrt{ifade} \\) veya \\( \\sqrt[n]{ifade} \\)
+- Üs: \\( x^2 \\), \\( e^{x+1} \\)
+- Alt simge: \\( a_n \\), \\( x_0 \\)
+- Limit: \\( \\lim_{x \\to a} f(x) \\)
+- İntegral: \\( \\int_a^b f(x) \\, dx \\)
+- Toplam: \\( \\sum_{k=1}^{n} k \\)
+- Parçalı: \\( f(x) = \\begin{cases} a, & x<0 \\\\ b, & x \\geq 0 \\end{cases} \\)
+- Matris: \\( \\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix} \\)
+- Yunan: \\( \\pi, \\theta, \\alpha, \\beta, \\gamma, \\Sigma, \\Delta \\)
+- Türev: \\( f'(x), \\frac{dy}{dx} \\)
+- Mantıksal: \\( \\Rightarrow, \\Leftrightarrow, \\in, \\forall, \\exists \\)
+- Diğer: \\( \\infty, \\pm, \\times, \\div, \\leq, \\geq, \\neq, \\approx \\)
 
-SAYFA DÜZENLEME KURALLARI:
+ÖNEMLİ: TÜRKÇE METİN düz yazılır, MATEMATİK kısmı LaTeX delimiter içinde olur.
 
-1. ANA BAŞLIK: <div class="bk-title">BAŞLIK</div>
-2. ALT BAŞLIK: <div class="bk-sub">Alt Başlık</div>
-3. ÖRNEK başlığı: <div class="bk-ex-head">ÖRNEK 1</div>
-4. ÇÖZÜM başlığı: <div class="bk-sol-head">ÇÖZÜM</div>
-5. ÖNEMLİ FORMÜL (ortalanmış vurgulu): <div class="bk-formula">formül</div>
-6. Normal açıklama: düz metin yaz, HTML etiketi gerekmez
-7. Önemli kelimeler: <b>kelime</b> ile kalın yap
+YAPISAL ÖĞE TANIMA — Resimde şunları gördüğünde ŞU HTML'leri kullan:
 
-ÖNEMLİ:
-- Kutu, çerçeve, renklendirme YAPMA — kullanıcı kendisi ekleyecek
-- Sadece başlık yapısı ve metin düzeni yap
-- Örneklerin başına ÖRNEK 1, ÖRNEK 2 yaz
-- Çözüm varsa başına ÇÖZÜM yaz
-- Tanım/teorem/dikkat kutusu EKLEME — düz metin olarak yaz
-- Her bölümü AYRI bir questions elemanı olarak döndür
-- İçeriği OLDUĞU GİBİ aktar, kendi bilgini EKLEME
-- Şekil/grafik varsa [Şekil: açıklama] yaz
+1. ANA BAŞLIK / KONU ADI (en üstte, büyük yazılmış):
+   <div class="bk-title">KONU ADI</div>
 
-JSON: {"questions":["bölüm1 html","bölüm2 html",...]}
+2. ALT BAŞLIK / BÖLÜM BAŞLIĞI:
+   <div class="bk-sub">Alt Başlık</div>
+
+3. TANIM (— "Tanım:" yazıyorsa, kavram açıklaması):
+   <div class="bk-box bk-def"><div class="bk-label">📘 TANIM</div><div>tanım metni</div></div>
+
+4. TEOREM / KURAL ("Teorem:", "Kural:" yazıyorsa):
+   <div class="bk-box bk-thm"><div class="bk-label">📐 TEOREM</div><div>teorem metni</div></div>
+
+5. ÖZELLİK ("Özellik:", "Sonuç:" yazıyorsa):
+   <div class="bk-box bk-prop"><div class="bk-label">📗 ÖZELLİK</div><div>özellik metni</div></div>
+
+6. UYARI / DİKKAT ("Dikkat!", "Uyarı:", "Önemli:" yazıyorsa):
+   <div class="bk-box bk-warn"><div class="bk-label">⚠️ DİKKAT</div><div>uyarı metni</div></div>
+
+7. NOT ("Not:", "Hatırlatma:" yazıyorsa):
+   <div class="bk-box bk-note"><div class="bk-label">📝 NOT</div><div>not metni</div></div>
+
+8. İPUCU ("İpucu:", "Püf noktası:" yazıyorsa):
+   <div class="bk-box bk-tip"><div class="bk-label">💡 İPUCU</div><div>ipucu metni</div></div>
+
+9. ÖRNEK ("Örnek", "Örnek 1", "Soru" yazıyorsa) — OTOMATIK NUMARALA:
+   <div class="bk-example"><div class="bk-ex-head">✏️ ÖRNEK 1</div><div>örnek/soru metni</div></div>
+
+10. ÇÖZÜM ("Çözüm:", "Cevap:" yazıyorsa):
+    <div class="bk-solve"><div class="bk-sol-head">✅ ÇÖZÜM</div><div>çözüm adımları</div></div>
+
+11. ÖNEMLİ FORMÜL (çerçeveli/vurgulu yazılmış formül):
+    <div class="bk-formula">formül</div>
+
+12. NORMAL AÇIKLAMA METNİ: düz <p>metin</p> — önemli kelimeleri <b>kalın</b> yap
+
+KURALLAR:
+- Resimde NE varsa ONU etiketle — kendi bilgini EKLEME, içeriği DEĞİŞTİRME
+- "Tanım", "Teorem", "Örnek" gibi kelimeleri gördüğünde MUTLAKA ilgili kutuya al
+- Örnekleri sırayla numarala (ÖRNEK 1, ÖRNEK 2...)
+- Her ÖRNEK'in hemen ardından ÇÖZÜM geliyorsa ayrı bk-solve kutusuna koy
+- Şekil/grafik varsa [Şekil: kısa açıklama] yaz
+- Her mantıksal bölümü (başlık+içerik bloğu, her örnek, her tanım) AYRI questions elemanı yap
+
+JSON: {"questions":["html bölüm 1","html bölüm 2",...]}
 Backtick veya markdown KULLANMA. Sadece JSON.`;
+
+// === DERSE GÖRE EK AI TALİMATI (sadece matematik+geometri ağırlıklı) ===
+const DERS_LIST=["Matematik","Geometri","Genel"];
+const DERS_HINTS={
+  "Matematik":``,
+  "Geometri":`
+DERS: GEOMETRİ — Ek formatlar:
+- Açıları belirt: ∠ABC, ∠A=60°
+- Üçgen, dörtgen, çember sembollerini Unicode olarak yaz: △ABC, ▱, ⊙O
+- Paralel: AB ∥ CD, dik: AB ⊥ CD, eş: ≅, benzer: ∼
+- Uzunluklar: |AB|, |OA|=r
+- Şekil/grafik varsa [Şekil: ...] yaz, çünkü AI çizim üretmiyor`,
+  "Genel":``
+};
 
 /* ═══ COMPONENTS ═══ */
 function FontPick({v,set}){
@@ -201,9 +317,204 @@ function FontPick({v,set}){
 function Canvas({onDone,busy,onAddAsImage}){
   const ref=useRef();const drawing=useRef(false);const startPt=useRef(null);const pathPts=useRef([]);const snapshot=useRef(null);const lastPt=useRef(null);
   const[tool,setTool]=useState("pen");const[sz,setSz]=useState(2.5);const[clr,setClr]=useState("#111");const[dirty,setDirty]=useState(false);
+  const[aiCleaning,setAiCleaning]=useState(false);
+  // === YENİ: Hazır şekil + Snap-to-grid + Local şekil tanıma ===
+  const[shapeType,setShapeType]=useState("rect"); // tool="shape" ise hangi şekil
+  const[snapGrid,setSnapGrid]=useState(false); // ızgaraya yapışma
+  const[autoSnap,setAutoSnap]=useState(false); // pen sonrası şekil tanıma
+  const SHAPE_LIST=[
+    {id:"rect",label:"Dikdörtgen",icon:"▭"},
+    {id:"square",label:"Kare",icon:"⬜"},
+    {id:"circle",label:"Daire",icon:"○"},
+    {id:"ellipse",label:"Elips",icon:"⬭"},
+    {id:"triangle",label:"Üçgen",icon:"△"},
+    {id:"rtriangle",label:"Dik Üçgen",icon:"◣"},
+    {id:"parallelogram",label:"Paralelkenar",icon:"▱"},
+    {id:"trapezoid",label:"Yamuk",icon:"⏢"},
+    {id:"diamond",label:"Eşkenar Dörtgen",icon:"◇"},
+    {id:"pentagon",label:"Beşgen",icon:"⬠"},
+    {id:"hexagon",label:"Altıgen",icon:"⬡"},
+    {id:"axes",label:"Koord. Düzlemi",icon:"➕"}
+  ];
+  // Izgaraya yapıştır (snapGrid açıksa)
+  const snapPt=(x,y)=>{
+    if(!snapGrid)return[x,y];
+    const g=20; // grid 20px
+    return[Math.round(x/g)*g,Math.round(y/g)*g];
+  };
+  // Hazır şekli çiz (start ve end koordinatları arasında)
+  const drawShape=(x1,y1,x2,y2)=>{
+    const ctx=ref.current.getContext("2d");
+    ctx.strokeStyle=clr;ctx.lineWidth=sz;ctx.fillStyle="transparent";
+    const minX=Math.min(x1,x2),maxX=Math.max(x1,x2);
+    const minY=Math.min(y1,y2),maxY=Math.max(y1,y2);
+    const w=maxX-minX,h=maxY-minY;
+    if(w<3||h<3)return;
+    ctx.beginPath();
+    if(shapeType==="rect"){
+      ctx.rect(minX,minY,w,h);
+    }else if(shapeType==="square"){
+      const s=Math.min(w,h);ctx.rect(minX,minY,s,s);
+    }else if(shapeType==="circle"){
+      const r=Math.min(w,h)/2;ctx.arc(minX+r,minY+r,r,0,Math.PI*2);
+    }else if(shapeType==="ellipse"){
+      ctx.ellipse(minX+w/2,minY+h/2,w/2,h/2,0,0,Math.PI*2);
+    }else if(shapeType==="triangle"){
+      ctx.moveTo(minX+w/2,minY);ctx.lineTo(minX,maxY);ctx.lineTo(maxX,maxY);ctx.closePath();
+    }else if(shapeType==="rtriangle"){
+      ctx.moveTo(minX,minY);ctx.lineTo(minX,maxY);ctx.lineTo(maxX,maxY);ctx.closePath();
+    }else if(shapeType==="parallelogram"){
+      const off=w*0.2;ctx.moveTo(minX+off,minY);ctx.lineTo(maxX,minY);ctx.lineTo(maxX-off,maxY);ctx.lineTo(minX,maxY);ctx.closePath();
+    }else if(shapeType==="trapezoid"){
+      const off=w*0.18;ctx.moveTo(minX+off,minY);ctx.lineTo(maxX-off,minY);ctx.lineTo(maxX,maxY);ctx.lineTo(minX,maxY);ctx.closePath();
+    }else if(shapeType==="diamond"){
+      ctx.moveTo(minX+w/2,minY);ctx.lineTo(maxX,minY+h/2);ctx.lineTo(minX+w/2,maxY);ctx.lineTo(minX,minY+h/2);ctx.closePath();
+    }else if(shapeType==="pentagon"){
+      const cx=minX+w/2,cy=minY+h/2,rx=w/2,ry=h/2;
+      for(let i=0;i<5;i++){const a=-Math.PI/2+i*2*Math.PI/5;const px=cx+rx*Math.cos(a),py=cy+ry*Math.sin(a);if(i===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);}
+      ctx.closePath();
+    }else if(shapeType==="hexagon"){
+      const cx=minX+w/2,cy=minY+h/2,rx=w/2,ry=h/2;
+      for(let i=0;i<6;i++){const a=i*Math.PI/3;const px=cx+rx*Math.cos(a),py=cy+ry*Math.sin(a);if(i===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);}
+      ctx.closePath();
+    }else if(shapeType==="axes"){
+      // Koordinat düzlemi: x ve y eksenleri ortadan, oklarla
+      const cx=minX+w/2,cy=minY+h/2;
+      ctx.moveTo(minX,cy);ctx.lineTo(maxX,cy);
+      ctx.moveTo(maxX-8,cy-4);ctx.lineTo(maxX,cy);ctx.lineTo(maxX-8,cy+4);
+      ctx.moveTo(cx,maxY);ctx.lineTo(cx,minY);
+      ctx.moveTo(cx-4,minY+8);ctx.lineTo(cx,minY);ctx.lineTo(cx+4,minY+8);
+    }
+    ctx.stroke();
+    // Eksen etiketleri
+    if(shapeType==="axes"){
+      ctx.fillStyle=clr;ctx.font="italic 14px 'STIX Two Text',serif";
+      ctx.fillText("x",maxX-12,minY+h/2-4);ctx.fillText("y",minX+w/2+5,minY+10);ctx.fillText("O",minX+w/2-9,minY+h/2+12);
+    }
+  };
+  // Local şekil tanıma — pathPts'e bakıp şekli tahmin eder
+  const recognizeStroke=(pts)=>{
+    if(pts.length<6)return null;
+    const xs=pts.map(p=>p[0]),ys=pts.map(p=>p[1]);
+    const minX=Math.min(...xs),maxX=Math.max(...xs);
+    const minY=Math.min(...ys),maxY=Math.max(...ys);
+    const w=maxX-minX,h=maxY-minY;
+    if(w<20&&h<20)return null;
+    const first=pts[0],last=pts[pts.length-1];
+    const closed=Math.hypot(first[0]-last[0],first[1]-last[1])<Math.max(w,h)*0.25;
+    // Yol uzunluğu / çevreden oran ile şekil tahmini
+    let plen=0;for(let i=1;i<pts.length;i++)plen+=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]);
+    if(!closed){
+      // Düz çizgi mi?
+      const dist=Math.hypot(last[0]-first[0],last[1]-first[1]);
+      if(dist>0&&plen/dist<1.15)return{type:"line",x1:first[0],y1:first[1],x2:last[0],y2:last[1]};
+      return null;
+    }
+    // Kapalı: daire mi, dörtgen mi, üçgen mi?
+    const cx=(minX+maxX)/2,cy=(minY+maxY)/2;
+    const rAvg=pts.reduce((s,p)=>s+Math.hypot(p[0]-cx,p[1]-cy),0)/pts.length;
+    const rDev=pts.reduce((s,p)=>s+Math.abs(Math.hypot(p[0]-cx,p[1]-cy)-rAvg),0)/pts.length;
+    if(rDev/rAvg<0.18&&Math.abs(w-h)/Math.max(w,h)<0.25){
+      // Daire (yarıçap sapması düşük + kare bbox)
+      return{type:"circle",cx,cy,r:rAvg};
+    }
+    if(rDev/rAvg<0.25){
+      // Elips
+      return{type:"ellipse",cx,cy,rx:w/2,ry:h/2};
+    }
+    // Köşe sayısını hesapla: yön değişim noktaları
+    const corners=[];
+    const step=Math.max(3,Math.floor(pts.length/40));
+    for(let i=step;i<pts.length-step;i+=step){
+      const dx1=pts[i][0]-pts[i-step][0],dy1=pts[i][1]-pts[i-step][1];
+      const dx2=pts[i+step][0]-pts[i][0],dy2=pts[i+step][1]-pts[i][1];
+      const a1=Math.atan2(dy1,dx1),a2=Math.atan2(dy2,dx2);
+      let da=Math.abs(a2-a1);if(da>Math.PI)da=2*Math.PI-da;
+      if(da>Math.PI/4)corners.push(pts[i]);
+    }
+    // Yakın köşeleri birleştir
+    const cs=[];corners.forEach(c=>{if(!cs.some(x=>Math.hypot(x[0]-c[0],x[1]-c[1])<25))cs.push(c);});
+    if(cs.length===3)return{type:"triangle",pts:cs};
+    if(cs.length===4)return{type:"rect",minX,minY,maxX,maxY};
+    return null;
+  };
+  // Tanınan şekli temiz çiz
+  const drawRecognized=(s)=>{
+    const ctx=ref.current.getContext("2d");
+    ctx.strokeStyle=clr;ctx.lineWidth=sz;ctx.fillStyle="transparent";
+    ctx.beginPath();
+    if(s.type==="line"){ctx.moveTo(s.x1,s.y1);ctx.lineTo(s.x2,s.y2);}
+    else if(s.type==="circle"){ctx.arc(s.cx,s.cy,s.r,0,Math.PI*2);}
+    else if(s.type==="ellipse"){ctx.ellipse(s.cx,s.cy,s.rx,s.ry,0,0,Math.PI*2);}
+    else if(s.type==="triangle"){const p=s.pts;ctx.moveTo(p[0][0],p[0][1]);ctx.lineTo(p[1][0],p[1][1]);ctx.lineTo(p[2][0],p[2][1]);ctx.closePath();}
+    else if(s.type==="rect"){ctx.rect(s.minX,s.minY,s.maxX-s.minX,s.maxY-s.minY);}
+    ctx.stroke();
+  };
+  // AI ile el çizimini temiz SVG olarak yeniden çiz
+  const cleanWithAI=async()=>{
+    if(!dirty)return;
+    if(!GEMINI_KEY){alert("API key girilmedi! Sağ üstteki 🔑 butonundan girin.");return;}
+    setAiCleaning(true);
+    try{
+      const c=ref.current;
+      const dataUrl=c.toDataURL("image/png");
+      const b=dataUrl.split(",")[1];
+      const m="image/png";
+      const cw=c.offsetWidth,ch=c.offsetHeight;
+      const prompt=`Bu el çizimi geometri/matematik şeklini analiz et ve TEMİZ SVG olarak yeniden üret.
+KURALLAR:
+- viewBox="0 0 ${cw} ${ch}" kullan
+- stroke="#111" stroke-width="2" fill="none" varsayılan
+- Düz çizgileri TAM DÜZ yap (line elementleri)
+- Üçgen/dörtgen/çokgen polygon ile, dairesel olanlar circle/ellipse ile
+- DİK AÇI işaretleri: vertex'te küçük kare (5x5 px) çiz <path d="M ... l 5 0 l 0 -5"/>
+- AÇI YAYLARI: vertex'ten küçük yay <path d="M x1 y1 A r r 0 0 1 x2 y2"/>
+- Yazıları text element olarak: font-family="STIX Two Text, serif" font-size="14" fill="#111"
+- Noktaları: <circle r="2.5" fill="#111"/>
+- Kullanıcının çizdiği şekli OLDUĞU GİBİ tanı, eklem yapma
+- Gri/silik el izleri varsa görmezden gel, sadece ana şekli al
+
+JSON ile dön: {"svg":"<svg xmlns=\\"http://www.w3.org/2000/svg\\" viewBox=\\"...\\">...</svg>"}
+Backtick veya markdown KULLANMA.`;
+      const raw=await callAI([{type:"image",source:{type:"base64",media_type:m,data:b}},{type:"text",text:prompt}]);
+      const j=parseJ(raw);
+      if(!j.svg){alert("AI yanıtı geçersiz, tekrar deneyin.");setAiCleaning(false);return;}
+      // SVG'yi canvas'a çiz
+      const svgBlob=new Blob([j.svg],{type:"image/svg+xml;charset=utf-8"});
+      const url=URL.createObjectURL(svgBlob);
+      const img=new Image();
+      img.onload=()=>{
+        pushUndo(); // Eski hali geri alınabilir olsun
+        const ctx=c.getContext("2d");
+        ctx.fillStyle="#fff";ctx.fillRect(0,0,c.offsetWidth,c.offsetHeight);
+        if(gridOpt.grid)drawGrid(gridOpt);
+        ctx.drawImage(img,0,0,c.offsetWidth,c.offsetHeight);
+        URL.revokeObjectURL(url);
+        setAiCleaning(false);
+        setDirty(true);
+      };
+      img.onerror=()=>{
+        URL.revokeObjectURL(url);
+        alert("SVG yüklenemedi");
+        setAiCleaning(false);
+      };
+      img.src=url;
+    }catch(e){
+      console.error(e);
+      alert("AI temizleme hatası: "+e.message);
+      setAiCleaning(false);
+    }
+  };
   const[gridOpt,setGridOpt]=useState({grid:true,nums:true});
   const[undoStack,setUndoStack]=useState([]);
-  const[cvH,setCvH]=useState(300); // canvas yüksekliği
+  // Başlangıç boyutu: ekran genişliğine göre büyük varsayılan
+  const[cvH,setCvH]=useState(()=>{
+    try{return window.innerWidth>=800?550:480;}catch(e){return 500;}
+  });
+  const[cvW,setCvW]=useState(()=>{
+    // Masaüstünde 720px genişlik (panel taşar, yatay scroll), mobilde 500px
+    try{return window.innerWidth>=800?720:500;}catch(e){return 600;}
+  });
   const[rightAngle,setRightAngle]=useState(0);
   const[arcShowDeg,setArcShowDeg]=useState(true);
   const[tickStyle,setTickStyle]=useState(0);
@@ -667,10 +978,32 @@ function Canvas({onDone,busy,onAddAsImage}){
     }else if(tool==="circle"){
       restoreSnap();const r=Math.sqrt((a-startPt.current[0])**2+(b-startPt.current[1])**2);
       x.beginPath();x.arc(startPt.current[0],startPt.current[1],r,0,Math.PI*2);x.strokeStyle=clr;x.lineWidth=sz;x.stroke();
-    }else if(tool==="rect"){
-      restoreSnap();const rx=Math.min(startPt.current[0],a),ry=Math.min(startPt.current[1],b);
-      const rw=Math.abs(a-startPt.current[0]),rh=Math.abs(b-startPt.current[1]);
-      x.beginPath();x.rect(rx,ry,rw,rh);x.strokeStyle=clr;x.lineWidth=sz;x.stroke();
+    }else if(tool==="rect"||tool==="ellipse"||tool==="square"||tool==="rtri"||tool==="par"||tool==="trap"||tool==="dia"||tool==="pent"||tool==="hex"||tool==="axes"){
+      restoreSnap();
+      const sp=startPt.current;
+      const[ea,eb]=snapPt(a,b); // snap-to-grid uygula
+      // shapeType'ı geçici olarak tool'a göre ayarla
+      const prev=shapeType;
+      // Tool ID'lerini drawShape uygun ID'ye eşle
+      const map={rect:"rect",ellipse:"ellipse",square:"square",rtri:"rtriangle",par:"parallelogram",trap:"trapezoid",dia:"diamond",pent:"pentagon",hex:"hexagon",axes:"axes"};
+      // Inline drawShape (state değiştirmeden)
+      const minX=Math.min(sp[0],ea),maxX=Math.max(sp[0],ea);
+      const minY=Math.min(sp[1],eb),maxY=Math.max(sp[1],eb);
+      const w=maxX-minX,h=maxY-minY;
+      x.strokeStyle=clr;x.lineWidth=sz;x.beginPath();
+      const t=map[tool];
+      if(t==="rect")x.rect(minX,minY,w,h);
+      else if(t==="square"){const s=Math.min(w,h);x.rect(minX,minY,s,s);}
+      else if(t==="ellipse")x.ellipse(minX+w/2,minY+h/2,w/2,h/2,0,0,Math.PI*2);
+      else if(t==="rtriangle"){x.moveTo(minX,minY);x.lineTo(minX,maxY);x.lineTo(maxX,maxY);x.closePath();}
+      else if(t==="parallelogram"){const off=w*0.2;x.moveTo(minX+off,minY);x.lineTo(maxX,minY);x.lineTo(maxX-off,maxY);x.lineTo(minX,maxY);x.closePath();}
+      else if(t==="trapezoid"){const off=w*0.18;x.moveTo(minX+off,minY);x.lineTo(maxX-off,minY);x.lineTo(maxX,maxY);x.lineTo(minX,maxY);x.closePath();}
+      else if(t==="diamond"){x.moveTo(minX+w/2,minY);x.lineTo(maxX,minY+h/2);x.lineTo(minX+w/2,maxY);x.lineTo(minX,minY+h/2);x.closePath();}
+      else if(t==="pentagon"){const cx=minX+w/2,cy=minY+h/2;for(let i=0;i<5;i++){const ang=-Math.PI/2+i*2*Math.PI/5;const px=cx+(w/2)*Math.cos(ang),py=cy+(h/2)*Math.sin(ang);if(i===0)x.moveTo(px,py);else x.lineTo(px,py);}x.closePath();}
+      else if(t==="hexagon"){const cx=minX+w/2,cy=minY+h/2;for(let i=0;i<6;i++){const ang=i*Math.PI/3;const px=cx+(w/2)*Math.cos(ang),py=cy+(h/2)*Math.sin(ang);if(i===0)x.moveTo(px,py);else x.lineTo(px,py);}x.closePath();}
+      else if(t==="axes"){const cx=minX+w/2,cy=minY+h/2;x.moveTo(minX,cy);x.lineTo(maxX,cy);x.moveTo(maxX-8,cy-4);x.lineTo(maxX,cy);x.lineTo(maxX-8,cy+4);x.moveTo(cx,maxY);x.lineTo(cx,minY);x.moveTo(cx-4,minY+8);x.lineTo(cx,minY);x.lineTo(cx+4,minY+8);}
+      x.stroke();
+      if(t==="axes"){x.fillStyle=clr;x.font="italic 14px 'STIX Two Text',serif";x.fillText("x",maxX-12,cy-4||(minY+h/2-4));x.fillText("y",minX+w/2+5,minY+10);x.fillText("O",minX+w/2-9,minY+h/2+12);}
     }else if(tool==="pen"){
       const lp=lastPt.current;const mx=(lp[0]+a)/2,my=(lp[1]+b)/2;
       x.quadraticCurveTo(lp[0],lp[1],mx,my);x.stroke();lastPt.current=[a,b];
@@ -740,7 +1073,15 @@ function Canvas({onDone,busy,onAddAsImage}){
       return;
     }
     if(drawing.current&&tool==="pen"&&pathPts.current.length>4&&snapshot.current){
-      restoreSnap();drawSmooth(ref.current.getContext("2d"),pathPts.current,clr,sz);
+      restoreSnap();
+      // Otomatik şekil tanıma açıksa, çizgiyi temiz versiyonuyla değiştir
+      if(autoSnap){
+        const recognized=recognizeStroke(pathPts.current);
+        if(recognized){drawRecognized(recognized);}
+        else{drawSmooth(ref.current.getContext("2d"),pathPts.current,clr,sz);}
+      }else{
+        drawSmooth(ref.current.getContext("2d"),pathPts.current,clr,sz);
+      }
     }
     drawing.current=false;snapshot.current=null;lastPt.current=null;
   };
@@ -767,7 +1108,7 @@ function Canvas({onDone,busy,onAddAsImage}){
     {label:"Araç",tools:[{id:"select",icon:"⊡",tip:"Seç ve taşı"},{id:"eraser",icon:"🧹",tip:"Silgi"}]},
     {label:"Çizim",tools:[{id:"pen",icon:"✏️",tip:"Serbest çizim (pürüzsüz)"},{id:"rawpen",icon:"🖊️",tip:"Ham kalem"},{id:"line",icon:"╱",tip:"Düz çizgi"},{id:"curve",icon:"⌢",tip:"Yay (eğri)"},{id:"dash",icon:"┄",tip:"Kesikli çizgi"}]},
     {label:"Ok",tools:[{id:"arrow",icon:"→",tip:"Ok"},{id:"dblarrow",icon:"⟷",tip:"Çift ok (ölçü)"}]},
-    {label:"Şekil",tools:[{id:"tri",icon:"△",tip:"Üçgen"},{id:"quad",icon:"◇",tip:"Dörtgen"},{id:"poly",icon:"⬠",tip:"Çokgen"},{id:"rect",icon:"▭",tip:"Dikdörtgen"},{id:"circle",icon:"○",tip:"Daire"}]},
+    {label:"Şekil",tools:[{id:"tri",icon:"△",tip:"Üçgen (3 nokta tıkla)"},{id:"quad",icon:"◇",tip:"Dörtgen (4 nokta tıkla)"},{id:"poly",icon:"⬠",tip:"Çokgen (n nokta tıkla)"},{id:"rect",icon:"▭",tip:"Dikdörtgen (sürükle)"},{id:"circle",icon:"○",tip:"Daire (sürükle)"},{id:"ellipse",icon:"⬭",tip:"Elips (sürükle)"},{id:"square",icon:"⬜",tip:"Kare (sürükle)"},{id:"rtri",icon:"◣",tip:"Dik üçgen (sürükle)"},{id:"par",icon:"▱",tip:"Paralelkenar (sürükle)"},{id:"trap",icon:"⏢",tip:"Yamuk (sürükle)"},{id:"dia",icon:"◇",tip:"Eşkenar dörtgen (sürükle)"},{id:"pent",icon:"⬠",tip:"Beşgen (sürükle)"},{id:"hex",icon:"⬡",tip:"Altıgen (sürükle)"},{id:"axes",icon:"➕",tip:"Koordinat düzlemi (sürükle)"}]},
     {label:"İşaret",tools:[{id:"arc",icon:"⌒",tip:"Açı yayı"},{id:"right",icon:"⊾",tip:"Dik açı"},{id:"parallel",icon:"∥",tip:"Paralel"},{id:"tick",icon:"╫",tip:"Eşit kenar"},{id:"dot",icon:"●",tip:"Nokta"},{id:"fill",icon:"🪣",tip:"Boya"}]},
     {label:"Metin",tools:[{id:"text",icon:"A",tip:"Metin"}]},
   ];
@@ -801,11 +1142,16 @@ function Canvas({onDone,busy,onAddAsImage}){
         <button className="ct" onClick={()=>drawGrid()} title="Koordinat düzlemi">📊</button>
         <label className="cb-chk"><input type="checkbox" checked={gridOpt.grid} onChange={e=>{const ng={...gridOpt,grid:e.target.checked};setGridOpt(ng);drawGrid(ng);}}/>Izgara</label>
         <label className="cb-chk"><input type="checkbox" checked={gridOpt.nums} onChange={e=>{const ng={...gridOpt,nums:e.target.checked};setGridOpt(ng);drawGrid(ng);}}/>Rakam</label>
+        <label className="cb-chk" title="Çizim noktaları en yakın 20px ızgara noktasına yapışsın"><input type="checkbox" checked={snapGrid} onChange={e=>setSnapGrid(e.target.checked)}/>🧲 Snap</label>
+        <label className="cb-chk" title="Serbest çizdiğiniz daire/üçgen/dikdörtgen otomatik temizlensin (API kullanmaz)"><input type="checkbox" checked={autoSnap} onChange={e=>setAutoSnap(e.target.checked)}/>✨ Otomatik</label>
       </div>
       <div className="cbs"/>
       <div className="cvb-g">
         <button className="ct" onClick={undo} disabled={!undoStack.length} title="Geri al (Ctrl+Z)">↩</button>
         <button className="ct" onClick={init} title="Temizle">🗑️</button>
+        <button className="ct ct-ai" onClick={cleanWithAI} disabled={!dirty||aiCleaning} title="AI ile şekli temizle (dik açıları, yayları düzgün yap)" style={{background:aiCleaning?"#ddd":"linear-gradient(135deg,#a78bfa,#7c3aed)",color:aiCleaning?"#999":"#fff",border:"none",fontWeight:600,fontSize:11,padding:"0 8px"}}>
+          {aiCleaning?"⏳":"🔮 AI Düzelt"}
+        </button>
         <div className="cbs"/>
         <button className="ct" onClick={()=>{
           const c=ref.current;const ctx=c.getContext("2d");const img=ctx.getImageData(0,0,c.width,c.height);
@@ -815,9 +1161,26 @@ function Canvas({onDone,busy,onAddAsImage}){
         <span className="cvb-sl">{cvH}px</span>
         <button className="ct" onClick={()=>{
           const c=ref.current;const ctx=c.getContext("2d");const img=ctx.getImageData(0,0,c.width,c.height);
-          setCvH(h=>Math.min(700,h+50));
+          setCvH(h=>Math.min(1000,h+50));
           setTimeout(()=>{const c2=ref.current;const p=window.devicePixelRatio||2;c2.width=c2.offsetWidth*p;c2.height=c2.offsetHeight*p;const x=c2.getContext("2d");x.setTransform(p,0,0,p,0,0);x.fillStyle="#fff";x.fillRect(0,0,c2.offsetWidth,c2.offsetHeight);x.putImageData(img,0,0);},50);
-        }} title="Canvas büyüt">▼</button>
+        }} title="Canvas büyüt (yükseklik)">▼</button>
+        <div className="cbs"/>
+        <button className="ct" onClick={()=>{
+          const c=ref.current;const ctx=c.getContext("2d");const img=ctx.getImageData(0,0,c.width,c.height);
+          setCvW(w=>{const cur=w||c.offsetWidth;return Math.max(280,cur-60);});
+          setTimeout(()=>{const c2=ref.current;const p=window.devicePixelRatio||2;c2.width=c2.offsetWidth*p;c2.height=c2.offsetHeight*p;const x=c2.getContext("2d");x.setTransform(p,0,0,p,0,0);x.fillStyle="#fff";x.fillRect(0,0,c2.offsetWidth,c2.offsetHeight);x.putImageData(img,0,0);},50);
+        }} title="Canvas daralt (genişlik)">◀</button>
+        <span className="cvb-sl">{cvW?cvW+"px":"otomatik"}</span>
+        <button className="ct" onClick={()=>{
+          const c=ref.current;const ctx=c.getContext("2d");const img=ctx.getImageData(0,0,c.width,c.height);
+          setCvW(w=>{const cur=w||c.offsetWidth;return Math.min(2000,cur+60);});
+          setTimeout(()=>{const c2=ref.current;const p=window.devicePixelRatio||2;c2.width=c2.offsetWidth*p;c2.height=c2.offsetHeight*p;const x=c2.getContext("2d");x.setTransform(p,0,0,p,0,0);x.fillStyle="#fff";x.fillRect(0,0,c2.offsetWidth,c2.offsetHeight);x.putImageData(img,0,0);},50);
+        }} title="Canvas genişlet">▶</button>
+        {cvW&&<button className="ct" onClick={()=>{
+          const c=ref.current;const ctx=c.getContext("2d");const img=ctx.getImageData(0,0,c.width,c.height);
+          setCvW(null);
+          setTimeout(()=>{const c2=ref.current;const p=window.devicePixelRatio||2;c2.width=c2.offsetWidth*p;c2.height=c2.offsetHeight*p;const x=c2.getContext("2d");x.setTransform(p,0,0,p,0,0);x.fillStyle="#fff";x.fillRect(0,0,c2.offsetWidth,c2.offsetHeight);x.putImageData(img,0,0);},50);
+        }} title="Genişliği sıfırla (otomatik)" style={{fontSize:9}}>⟲</button>}
       </div>
       <div className="cbs"/>
       <div className="cvb-g">
@@ -826,7 +1189,7 @@ function Canvas({onDone,busy,onAddAsImage}){
       </div>
     </div>
     <div className="cv-area" onMouseMove={onLabelMove} onMouseUp={onLabelUp} onMouseLeave={onLabelUp}>
-      <canvas ref={ref} className="cvc" style={{height:cvH}} onMouseDown={dn} onMouseMove={mv} onMouseUp={up} onMouseLeave={up} onTouchStart={dn} onTouchMove={mv} onTouchEnd={up}
+      <canvas ref={ref} className="cvc" style={{height:cvH,...(cvW?{width:cvW+"px",maxWidth:"none"}:{})}} onMouseDown={dn} onMouseMove={mv} onMouseUp={up} onMouseLeave={up} onTouchStart={dn} onTouchMove={mv} onTouchEnd={up}
         onDoubleClick={e=>{
           if(tool==="poly"&&polyPts.length>=3){
             e.preventDefault();const ctx=ref.current.getContext("2d");
@@ -1172,7 +1535,7 @@ SADECE SVG kodu döndür, başka hiçbir şey yazma. <svg> ile başla </svg> ile
         const j=parseJ(raw);if(j.questions?.length){saveHistory();const n=[...qs];n[i]=j.questions[0];setQs(n);}}
     }catch(e){}setConverting(null);
   };
-  const printHtml=(title)=>`<!DOCTYPE html><html><head><title>${title||"MathStudio"}</title><link href="${GF}" rel="stylesheet"><style>@page{size:A4;margin:0}*{box-sizing:border-box;margin:0;padding:0}body{margin:0}.pw-break{display:none}.pw-page{page-break-after:always}.pw-page:last-child{page-break-after:auto}.QTE,.QOA{background:none!important;box-shadow:none!important;border:none!important}.QOA:empty{display:none}.QSP,.QIS{display:none!important}${a4css(ff)}${mathCSS()}</style></head><body>${pvRef.current?.outerHTML||""}</body></html>`;
+  const printHtml=(title)=>`<!DOCTYPE html><html><head><title>${title||"MathStudio"}</title><link href="${GF}" rel="stylesheet"><style>@page{size:A4;margin:0}*{box-sizing:border-box;margin:0;padding:0}body{margin:0}.pw-break{display:none}.pw-page{page-break-after:always}.pw-page:last-child{page-break-after:auto}.QTE,.QOA{background:none!important;box-shadow:none!important;border:none!important}.QOA:empty{display:none}.QSP,.QIS,.etb,.etb *,.QOA-tools,.q-tools,.pw-tools,.q-del,.q-edit,.q-imgbtn,[contenteditable]{outline:none!important;box-shadow:none!important}.QSP,.QIS,.etb,.QOA-tools,.q-tools,.pw-tools,.q-del,.q-edit,.q-imgbtn,.QXIC{display:none!important}.QTE,.QTE:hover,.QTE:focus,.QOA,.QOA:hover,.QOA:focus{background:transparent!important;box-shadow:none!important;outline:none!important}.QOA:empty,.QOA:empty::before{display:none!important;content:none!important}.HbkE,.HbaE,.HinfE,.HduE,.HdbE,.HzhE,.HsiE,.HhdE{box-shadow:none!important;outline:none!important}body,html,.A4{background:#fff!important}${CMU_FONT_FACE}${a4css(ff)}${mathCSS()}</style></head><body>${pvRef.current?.outerHTML||""}</body></html>`;
   const print=()=>{const w=window.open("","_blank");if(!w)return;w.document.write(printHtml(cfg.konu+" - "+cfg.alt));w.document.close();setTimeout(()=>w.print(),500);};
   const savePDF=()=>{const w=window.open("","_blank");if(!w)return;w.document.write(printHtml((cfg.konu||"MathStudio")+"_"+(cfg.alt||"Test")));w.document.close();setTimeout(()=>w.print(),500);};
 
@@ -1294,7 +1657,7 @@ SADECE SVG kodu döndür, başka hiçbir şey yazma. <svg> ile başla </svg> ile
           }
         }
       }}>
-        <EditorToolbar pvRef={pvRef}/>
+        <EditorToolbar pvRef={pvRef} tpl={tpl}/>
         {Array.from({length:Math.ceil(qs.length/perPage)}).map((_,pi)=>{
           const pageQs=qs.slice(pi*perPage,(pi+1)*perPage);
           const tp=Math.ceil(qs.length/perPage);
@@ -1310,126 +1673,226 @@ function cleanImage(file){
   return new Promise(async(resolve)=>{
     try{
       const bitmap=await createImageBitmap(file);
-      const cv=document.createElement("canvas");
-      cv.width=bitmap.width;cv.height=bitmap.height;
-      const ctx=cv.getContext("2d",{willReadFrequently:true});
-      ctx.drawImage(bitmap,0,0);
-      const imgData=ctx.getImageData(0,0,cv.width,cv.height);
-      const d=imgData.data;
-      const total=d.length/4;
-      
-      // Step 1: Find the background color (most common light color)
-      // Sample corners and edges to detect paper color
-      const w=cv.width,h=cv.height;
-      let bgR=0,bgG=0,bgB=0,bgCount=0;
-      const sample=(x,y)=>{
-        const i=(y*w+x)*4;
-        const g=d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114;
-        if(g>120){bgR+=d[i];bgG+=d[i+1];bgB+=d[i+2];bgCount++;}
+      let cv=document.createElement("canvas");
+      let w=bitmap.width,h=bitmap.height;
+      // 0) ÇOK BÜYÜK FOTOĞRAFI KÜÇÜLT (hız + bellek)
+      const MAX_DIM=2200;
+      if(Math.max(w,h)>MAX_DIM){const sc=MAX_DIM/Math.max(w,h);w=Math.round(w*sc);h=Math.round(h*sc);}
+      cv.width=w;cv.height=h;
+      let ctx=cv.getContext("2d",{willReadFrequently:true});
+      ctx.drawImage(bitmap,0,0,w,h);
+      let imgData=ctx.getImageData(0,0,w,h);
+      let d=imgData.data;
+      const N=w*h;
+
+      // 1) Gri tonlama dizisi (her preprocessing adımından sonra yeniden hesaplanır)
+      let gray=new Float32Array(N);
+      const _grayRecompute=()=>{for(let i=0,j=0;i<d.length;i+=4,j++){gray[j]=d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114;}};
+      _grayRecompute();
+
+      // 1A) GÖLGE KALDIRMA — arka plan parlaklık haritasıyla ışığı eşitle.
+      // Görüntüyü karelere böler, her karedeki EN PARLAK pikseli "boş kağıt" sayar,
+      // sonra her pikseli yerel parlaklığa böler → el/lamba gölgesi kaybolur, leke gri patches eşitlenir.
+      {
+        const TILE=Math.max(24,Math.round(Math.min(w,h)/22));
+        const bw=Math.ceil(w/TILE),bh=Math.ceil(h/TILE);
+        const bg=new Float32Array(bw*bh);
+        for(let by=0;by<bh;by++)for(let bx=0;bx<bw;bx++){
+          let m=0;
+          const x0=bx*TILE,y0=by*TILE,x1=Math.min(w,x0+TILE),y1=Math.min(h,y0+TILE);
+          for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){const v=gray[y*w+x];if(v>m)m=v;}
+          bg[by*bw+bx]=m||255;
+        }
+        // 3x3 mean blur (yumuşak geçiş)
+        const bgS=new Float32Array(bw*bh);
+        for(let by=0;by<bh;by++)for(let bx=0;bx<bw;bx++){
+          let s=0,c=0;
+          for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+            const ny=by+dy,nx=bx+dx;if(ny<0||ny>=bh||nx<0||nx>=bw)continue;
+            s+=bg[ny*bw+nx];c++;
+          }
+          bgS[by*bw+bx]=s/c;
+        }
+        // Bilinear interpolasyonla piksele uygula
+        for(let y=0;y<h;y++){
+          const fy=y/TILE,by0=Math.min(bh-1,Math.floor(fy)),by1=Math.min(bh-1,by0+1),fyf=fy-by0;
+          for(let x=0;x<w;x++){
+            const fx=x/TILE,bx0=Math.min(bw-1,Math.floor(fx)),bx1=Math.min(bw-1,bx0+1),fxf=fx-bx0;
+            const v00=bgS[by0*bw+bx0],v01=bgS[by0*bw+bx1],v10=bgS[by1*bw+bx0],v11=bgS[by1*bw+bx1];
+            const bgL=(v00*(1-fxf)+v01*fxf)*(1-fyf)+(v10*(1-fxf)+v11*fxf)*fyf;
+            const fac=250/(bgL||1);
+            const i=(y*w+x)*4;
+            d[i]=Math.min(255,d[i]*fac);d[i+1]=Math.min(255,d[i+1]*fac);d[i+2]=Math.min(255,d[i+2]*fac);
+          }
+        }
+        ctx.putImageData(imgData,0,0);
+        _grayRecompute();
+      }
+
+      // 1B) DESKEW — eğri çekilmişse otomatik düzleştir.
+      // Küçük thumbnail üzerinde -8°..+8° rotasyonları dener; "satır toplam varyansı"
+      // en yüksek olan açı = metin satırlarının yatay olduğu açı.
+      {
+        const TH=180;
+        const sw=Math.max(80,Math.round(w*TH/Math.max(w,h)));
+        const sh2=Math.max(80,Math.round(h*TH/Math.max(w,h)));
+        const thumb=document.createElement("canvas");thumb.width=sw;thumb.height=sh2;
+        const tctx=thumb.getContext("2d");tctx.imageSmoothingEnabled=true;
+        tctx.drawImage(cv,0,0,sw,sh2);
+        const tData=tctx.getImageData(0,0,sw,sh2).data;
+        const tg=new Float32Array(sw*sh2);
+        for(let i=0,j=0;i<tData.length;i+=4,j++){tg[j]=255-(tData[i]*0.299+tData[i+1]*0.587+tData[i+2]*0.114);}
+        const rowVar=(aDeg)=>{
+          const a=aDeg*Math.PI/180,cs=Math.cos(a),sn=Math.sin(a),cx=sw/2,cy=sh2/2;
+          const rows=new Float32Array(sh2);
+          for(let y=0;y<sh2;y++){const dy=y-cy;for(let x=0;x<sw;x++){const dx=x-cx;const ny=(cy+(-sn*dx+cs*dy))|0;if(ny>=0&&ny<sh2)rows[ny]+=tg[y*sw+x];}}
+          let m=0;for(let y=0;y<sh2;y++)m+=rows[y];m/=sh2;
+          let v=0;for(let y=0;y<sh2;y++){const e=rows[y]-m;v+=e*e;}
+          return v;
+        };
+        const baseV=rowVar(0);
+        let bestA=0,bestV=baseV;
+        for(let aDeg=-8;aDeg<=8;aDeg+=0.5){if(Math.abs(aDeg)<0.001)continue;const v=rowVar(aDeg);if(v>bestV){bestV=v;bestA=aDeg;}}
+        // Sadece anlamlı eğrilikte döndür: en az 1° VE %8'den fazla iyileşme (yanlış pozitif önlemi)
+        if(Math.abs(bestA)>=1&&bestV>baseV*1.08){
+          const a=bestA*Math.PI/180;
+          const rotCv=document.createElement("canvas");rotCv.width=w;rotCv.height=h;
+          const rctx=rotCv.getContext("2d",{willReadFrequently:true});
+          rctx.fillStyle="#fff";rctx.fillRect(0,0,w,h);
+          rctx.translate(w/2,h/2);rctx.rotate(-a);rctx.translate(-w/2,-h/2);
+          rctx.drawImage(cv,0,0);
+          cv=rotCv;ctx=rctx;
+          imgData=ctx.getImageData(0,0,w,h);
+          d=imgData.data;
+          _grayRecompute();
+        }
+      }
+
+      // 2) İntegral görüntü (hızlı kutu toplamı için)
+      const intg=new Float64Array(N);
+      for(let y=0;y<h;y++){
+        let rowSum=0;
+        for(let x=0;x<w;x++){
+          rowSum+=gray[y*w+x];
+          intg[y*w+x]=rowSum+(y>0?intg[(y-1)*w+x]:0);
+        }
+      }
+      const boxSum=(x1,y1,x2,y2)=>{
+        const A=(y1>0&&x1>0)?intg[(y1-1)*w+(x1-1)]:0;
+        const B=(y1>0)?intg[(y1-1)*w+x2]:0;
+        const C=(x1>0)?intg[y2*w+(x1-1)]:0;
+        const D=intg[y2*w+x2];
+        return D-B-C+A;
       };
-      // Sample edges
-      for(let x=0;x<w;x+=3){sample(x,0);sample(x,h-1);sample(x,Math.floor(h/2));}
-      for(let y=0;y<h;y+=3){sample(0,y);sample(w-1,y);}
-      
-      if(bgCount>0){bgR=bgR/bgCount;bgG=bgG/bgCount;bgB=bgB/bgCount;}
-      else{bgR=230;bgG=230;bgB=230;}
-      
-      const bgGray=bgR*0.299+bgG*0.587+bgB*0.114;
-      // Threshold = midpoint between background and pure black
-      const thresh=bgGray*0.65;
-      
-      // Step 2: Process each pixel
+
+      // 3) ADAPTİF eşikleme — pencere yarıçapı görüntü boyutunun ~%5'i
+      // Düzgün olmayan ışık altında bile gri lekeleri kaldırır
+      const r=Math.max(25,Math.round(Math.min(w,h)*0.05));
+      const bias=20; // beyaza eğilim arttırıldı — gri patches'i de beyaza zorlar
+
+      // 4) Eşikleme + kırpma sınırları
+      let minX=w,minY=h,maxX=0,maxY=0;
+      for(let y=0;y<h;y++){
+        for(let x=0;x<w;x++){
+          const x1=x-r<0?0:x-r;
+          const y1=y-r<0?0:y-r;
+          const x2=x+r>=w?w-1:x+r;
+          const y2=y+r>=h?h-1:y+r;
+          const area=(x2-x1+1)*(y2-y1+1);
+          const localAvg=boxSum(x1,y1,x2,y2)/area;
+          const i=(y*w+x)*4;
+          const gv=gray[y*w+x];
+
+          if(gv>localAvg-bias){
+            // Yerel arka plan veya daha aydınlık → TERTEMİZ BEYAZ
+            d[i]=255;d[i+1]=255;d[i+2]=255;
+          }else{
+            // Yazı/şekil — KORU ve hafif koyulaştır (silik olmasın)
+            const ratio=gv/(localAvg+1);
+            const enhance=Math.pow(ratio,1.5);
+            d[i]=Math.max(0,Math.round(d[i]*enhance));
+            d[i+1]=Math.max(0,Math.round(d[i+1]*enhance));
+            d[i+2]=Math.max(0,Math.round(d[i+2]*enhance));
+            // İçerik bounding box (sadece kuvvetli içerik say)
+            if(gv<localAvg-bias-15){
+              if(x<minX)minX=x;
+              if(x>maxX)maxX=x;
+              if(y<minY)minY=y;
+              if(y>maxY)maxY=y;
+            }
+          }
+          d[i+3]=255;
+        }
+      }
+
+      // 4.5) SON TEMİZLİK — açık gri pikselleri saf beyaza, koyu olanları daha keskin
       for(let i=0;i<d.length;i+=4){
-        const r=d[i],g=d[i+1],b=d[i+2];
-        const gray=r*0.299+g*0.587+b*0.114;
-        
-        // How close is this pixel to the background color?
-        const diffR=Math.abs(r-bgR);
-        const diffG=Math.abs(g-bgG);
-        const diffB=Math.abs(b-bgB);
-        const bgDist=Math.sqrt(diffR*diffR+diffG*diffG+diffB*diffB);
-        
-        if(bgDist<80){
-          // Very close to background → pure white
+        const gv=d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114;
+        if(gv>=170){
+          // Açık gri → tertemiz beyaz (eşik 180'den 170'e indirildi — gölgesi alınmış girdiyle daha agresif beyazlatma)
           d[i]=255;d[i+1]=255;d[i+2]=255;
-        }else if(gray>thresh){
-          // Lighter than threshold but not background → fade to white
-          const fade=Math.min(1,(gray-thresh)/(bgGray-thresh));
-          d[i]=Math.round(r+(255-r)*fade);
-          d[i+1]=Math.round(g+(255-g)*fade);
-          d[i+2]=Math.round(b+(255-b)*fade);
+        }else if(gv<=110){
+          // Yazı/şekil → daha keskin/koyu
+          const k=0.7;
+          d[i]=Math.max(0,Math.round(d[i]*k));
+          d[i+1]=Math.max(0,Math.round(d[i+1]*k));
+          d[i+2]=Math.max(0,Math.round(d[i+2]*k));
         }
-        // Dark pixels stay as they are
-        d[i+3]=255;
+        // 110-180 arası: sınır pikseller (kalem ucu yumuşaklığı), dokunulmaz
       }
-      
-      // Step 3: Clean edges - very generous border cleaning
-      const edgeX=Math.max(30,Math.round(w*0.07));
-      const edgeY=Math.max(25,Math.round(h*0.05));
-      for(let y=0;y<h;y++){
-        for(let x=0;x<w;x++){
-          if(x<edgeX||x>=w-edgeX||y<edgeY||y>=h-edgeY){
-            const i=(y*w+x)*4;
-            d[i]=255;d[i+1]=255;d[i+2]=255;d[i+3]=255;
-          }
-        }
-      }
-      
-      // Step 3.5: Corner cleaning - wipe ALL corners aggressively
-      const cr=Math.max(120,Math.round(Math.min(w,h)*0.25));
-      for(let y=0;y<h;y++){
-        for(let x=0;x<w;x++){
-          const inCorner=(
-            (x<cr&&y<cr)||(x>=w-cr&&y<cr)||
-            (x<cr&&y>=h-cr)||(x>=w-cr&&y>=h-cr)
-          );
-          if(inCorner){
-            const i=(y*w+x)*4;
-            d[i]=255;d[i+1]=255;d[i+2]=255;d[i+3]=255;
-          }
-        }
-      }
-      
-      // Step 4: Flood fill from edges - any dark pixel touching the border gets removed
-      const isWhite=(i)=>d[i]===255&&d[i+1]===255&&d[i+2]===255;
-      const makeWhite=(i)=>{d[i]=255;d[i+1]=255;d[i+2]=255;d[i+3]=255;};
-      const gray=(i)=>d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114;
-      
-      // Scan left edge inward - remove dark strips
-      for(let y=0;y<h;y++){
-        for(let x=0;x<Math.min(w*0.15,80);x++){
-          const i=(y*w+x)*4;
-          if(gray(i)>bgGray*0.5) break; // hit actual content, stop
-          makeWhite(i);
-        }
-      }
-      // Scan right edge inward
-      for(let y=0;y<h;y++){
-        for(let x=w-1;x>Math.max(w*0.85,w-80);x--){
-          const i=(y*w+x)*4;
-          if(gray(i)>bgGray*0.5) break;
-          makeWhite(i);
-        }
-      }
-      // Scan top edge inward
-      for(let x=0;x<w;x++){
-        for(let y=0;y<Math.min(h*0.1,50);y++){
-          const i=(y*w+x)*4;
-          if(gray(i)>bgGray*0.5) break;
-          makeWhite(i);
-        }
-      }
-      // Scan bottom edge inward
-      for(let x=0;x<w;x++){
-        for(let y=h-1;y>Math.max(h*0.9,h-50);y--){
-          const i=(y*w+x)*4;
-          if(gray(i)>bgGray*0.5) break;
-          makeWhite(i);
-        }
-      }
-      
       ctx.putImageData(imgData,0,0);
-      resolve(cv.toDataURL("image/png"));
+
+      // 4.6) KENAR GÖLGE TEMİZLİĞİ — sayfa kenarındaki ince koyu şerit için
+      // İçeriğin sınır kutusunu sayfa kenarına dayanan piksellerden geri çek
+      const edgePullCheck=(side)=>{
+        // Bir kenardaki ilk koyu satır/sütun varsa, "gerçek içerik mi yoksa gölge mi" diye kontrol et
+        // Eğer aynı satır/sütunda az koyu piksel varsa (oran<%30) → gölge, beyaza çevir
+        const test=[];
+        if(side==="top"){for(let x=0;x<w;x++)test.push((0*w+x)*4);}
+        else if(side==="bottom"){for(let x=0;x<w;x++)test.push(((h-1)*w+x)*4);}
+        else if(side==="left"){for(let y=0;y<h;y++)test.push((y*w+0)*4);}
+        else if(side==="right"){for(let y=0;y<h;y++)test.push((y*w+(w-1))*4);}
+        let darkCount=0;
+        test.forEach(i=>{const gv=d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114;if(gv<150)darkCount++;});
+        // Kenarın %15'inden fazlası koyuysa muhtemelen gölge çizgisi var, 1-3 piksellik şeridi temizle
+        if(darkCount>test.length*0.15){
+          const stripDepth=Math.max(2,Math.round(Math.min(w,h)*0.005));
+          for(let s=0;s<stripDepth;s++){
+            const idxs=[];
+            if(side==="top"){for(let x=0;x<w;x++)idxs.push((s*w+x)*4);}
+            else if(side==="bottom"){for(let x=0;x<w;x++)idxs.push(((h-1-s)*w+x)*4);}
+            else if(side==="left"){for(let y=0;y<h;y++)idxs.push((y*w+s)*4);}
+            else if(side==="right"){for(let y=0;y<h;y++)idxs.push((y*w+(w-1-s))*4);}
+            idxs.forEach(i=>{
+              const gv=d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114;
+              // Sadece gri/açık koyu (gerçek yazıya değil) → beyaza
+              if(gv<200&&gv>50){d[i]=255;d[i+1]=255;d[i+2]=255;}
+            });
+          }
+        }
+      };
+      edgePullCheck("top");
+      edgePullCheck("bottom");
+      edgePullCheck("left");
+      edgePullCheck("right");
+      ctx.putImageData(imgData,0,0);
+
+      // 5) Otomatik kırpma — sadece soruyu içeren bölgeyi al
+      if(maxX>minX+30&&maxY>minY+30){
+        const margin=Math.round(Math.min(w,h)*0.025);
+        const cx=Math.max(0,minX-margin);
+        const cy=Math.max(0,minY-margin);
+        const cw2=Math.min(w-cx,maxX-minX+2*margin);
+        const ch2=Math.min(h-cy,maxY-minY+2*margin);
+        const cropped=document.createElement("canvas");
+        cropped.width=cw2;cropped.height=ch2;
+        const cctx=cropped.getContext("2d");
+        cctx.fillStyle="#fff";cctx.fillRect(0,0,cw2,ch2);
+        cctx.drawImage(cv,cx,cy,cw2,ch2,0,0,cw2,ch2);
+        resolve(cropped.toDataURL("image/png"));
+      }else{
+        resolve(cv.toDataURL("image/png"));
+      }
     }catch(e){
       const r=new FileReader();
       r.onload=()=>resolve(r.result);
@@ -1469,7 +1932,8 @@ function Settings({tpl,setTpl,cols,setCols,cfg,uc,onAddOpts}){
 }
 
 /* ═══ Floating Editor Toolbar — metin seçip boyut/stil değiştirme ═══ */
-function EditorToolbar({pvRef}){
+function EditorToolbar({pvRef,tpl}){
+  const isLearning=tpl==="konu"; // Ders Notu / Konu Anlatımı
   const applySize=(size)=>{
     const sel=window.getSelection();
     if(!sel||sel.isCollapsed||!sel.rangeCount)return;
@@ -1532,59 +1996,70 @@ function EditorToolbar({pvRef}){
   const prevent=(e)=>e.preventDefault();
   return(
     <div className="etb" onMouseDown={prevent}>
-      <button className="etb-b etb-ud" onMouseDown={prevent} onClick={()=>{document.execCommand('undo');}} title="Geri al">↩</button>
-      <button className="etb-b etb-ud" onMouseDown={prevent} onClick={()=>{document.execCommand('redo');}} title="İleri al">↪</button>
-      <button className="etb-b etb-ud" onMouseDown={prevent} onClick={removeFormat} title="Kutu/vurgu kaldır">✂️</button>
-      <div className="etb-sep"/>
-      <span className="etb-l">Metin:</span>
-      {[8,9,10,11,12,14].map(s=><button key={s} className={`etb-b${s===11?" etb-on":""}`} onMouseDown={prevent} onClick={()=>applySize(s+'pt')}>{s}</button>)}
-      <div className="etb-sep"/>
-      <button className="etb-b etb-f" onMouseDown={prevent} onClick={()=>applyStyle('fontWeight','bold')} title="Kalın"><b>B</b></button>
-      <button className="etb-b etb-f" onMouseDown={prevent} onClick={()=>applyStyle('fontStyle','italic')} title="İtalik"><i>I</i></button>
-      <button className="etb-b etb-f" onMouseDown={prevent} onClick={()=>applyStyle('textDecoration','underline')} title="Altı çizili"><u>U</u></button>
-      <div className="etb-sep"/>
-      <button className="etb-b etb-c" onMouseDown={prevent} onClick={()=>applyStyle('color','#c00')} title="Kırmızı">🔴</button>
-      <button className="etb-b etb-c" onMouseDown={prevent} onClick={()=>applyStyle('color','#2563eb')} title="Mavi">🔵</button>
-      <button className="etb-b etb-c" onMouseDown={prevent} onClick={()=>applyStyle('color','#1a1a1a')} title="Siyah">⚫</button>
-      <div className="etb-sep"/>
-      <span className="etb-l">Vurgu:</span>
-      <button className="etb-b etb-h" onMouseDown={prevent} onClick={()=>applyStyle('backgroundColor','#fef3c7')} title="Sarı vurgu" style={{background:'#fef3c7'}}>H</button>
-      <button className="etb-b etb-h" onMouseDown={prevent} onClick={()=>applyStyle('backgroundColor','#dbeafe')} title="Mavi vurgu" style={{background:'#dbeafe'}}>H</button>
-      <button className="etb-b etb-h" onMouseDown={prevent} onClick={()=>applyStyle('backgroundColor','#dcfce7')} title="Yeşil vurgu" style={{background:'#dcfce7'}}>H</button>
-      <button className="etb-b etb-h" onMouseDown={prevent} onClick={()=>applyStyle('backgroundColor','#fde0e0')} title="Kırmızı vurgu" style={{background:'#fde0e0'}}>H</button>
-      <div className="etb-sep"/>
-      <span className="etb-l">Kutu:</span>
-      <button className="etb-b etb-bx" onMouseDown={prevent} onClick={()=>wrapBox('ebox ebox-blue')} title="Mavi kutu">📘</button>
-      <button className="etb-b etb-bx" onMouseDown={prevent} onClick={()=>wrapBox('ebox ebox-green')} title="Yeşil kutu">📗</button>
-      <button className="etb-b etb-bx" onMouseDown={prevent} onClick={()=>wrapBox('ebox ebox-orange')} title="Turuncu kutu">📙</button>
-      <button className="etb-b etb-bx" onMouseDown={prevent} onClick={()=>wrapBox('ebox ebox-red')} title="Kırmızı kutu">📕</button>
-      <div className="etb-sep"/>
-      <span className="etb-l">Ekle:</span>
-      <button className="etb-b etb-ins" onMouseDown={prevent} onClick={()=>insertBox('ebox ebox-def','<b>TANIM:</b> Tanım metnini buraya yazın...')} title="Tanım kutusu">📝Tanım</button>
-      <button className="etb-b etb-ins" onMouseDown={prevent} onClick={()=>insertBox('ebox ebox-thm','<b>TEOREM:</b> Teorem metnini buraya yazın...')} title="Teorem kutusu">📐Teorem</button>
-      <button className="etb-b etb-ins" onMouseDown={prevent} onClick={()=>insertBox('ebox ebox-warn','<b>DİKKAT:</b> Önemli notu buraya yazın...')} title="Dikkat kutusu">⚠️Dikkat</button>
-      <button className="etb-b etb-ins" onMouseDown={prevent} onClick={()=>insertBox('ebox ebox-tip','<b>İPUCU:</b> İpucu metnini buraya yazın...')} title="İpucu kutusu">💡İpucu</button>
-      <div className="etb-sep"/>
-      <span className="etb-l">Kitap:</span>
-      <button className="etb-b etb-ins etb-bk" onMouseDown={prevent} onClick={()=>wrapBox('bk-box bk-def')} title="Seçili metni tanım kutusuna al">📘Tanım</button>
-      <button className="etb-b etb-ins etb-bk" onMouseDown={prevent} onClick={()=>wrapBox('bk-box bk-thm')} title="Seçili metni teorem kutusuna al">📐Teorem</button>
-      <button className="etb-b etb-ins etb-bk" onMouseDown={prevent} onClick={()=>wrapBox('bk-box bk-prop')} title="Seçili metni özellik kutusuna al">📗Özellik</button>
-      <button className="etb-b etb-ins etb-bk" onMouseDown={prevent} onClick={()=>wrapBox('bk-box bk-warn')} title="Seçili metni dikkat kutusuna al">⚠️Dikkat</button>
-      <button className="etb-b etb-ins etb-bk" onMouseDown={prevent} onClick={()=>wrapBox('bk-box bk-tip')} title="Seçili metni ipucu kutusuna al">💡İpucu</button>
-      <button className="etb-b etb-ins etb-bk" onMouseDown={prevent} onClick={()=>wrapBox('bk-example')} title="Seçili metni örnek kutusuna al">✏️Örnek</button>
-      <button className="etb-b etb-ins etb-bk" onMouseDown={prevent} onClick={()=>wrapBox('bk-solve')} title="Seçili metni çözüm kutusuna al">✅Çözüm</button>
+      {/* SATIR 1: Temel araçlar — TÜM şablonlarda var */}
+      <div className="etb-row">
+        <button className="etb-b etb-ud" onMouseDown={prevent} onClick={()=>{document.execCommand('undo');}} title="Geri al">↩</button>
+        <button className="etb-b etb-ud" onMouseDown={prevent} onClick={()=>{document.execCommand('redo');}} title="İleri al">↪</button>
+        <button className="etb-b etb-ud" onMouseDown={prevent} onClick={removeFormat} title="Biçimlendirmeyi kaldır">✂️</button>
+        <div className="etb-sep"/>
+        <span className="etb-l">Yazı:</span>
+        {[8,9,10,11,12,14].map(s=><button key={s} className={`etb-b${s===11?" etb-on":""}`} onMouseDown={prevent} onClick={()=>applySize(s+'pt')}>{s}</button>)}
+        <div className="etb-sep"/>
+        <button className="etb-b etb-f" onMouseDown={prevent} onClick={()=>applyStyle('fontWeight','bold')} title="Kalın"><b>B</b></button>
+        <button className="etb-b etb-f" onMouseDown={prevent} onClick={()=>applyStyle('fontStyle','italic')} title="İtalik"><i>I</i></button>
+        <button className="etb-b etb-f" onMouseDown={prevent} onClick={()=>applyStyle('textDecoration','underline')} title="Altı çizili"><u>U</u></button>
+        <div className="etb-sep"/>
+        <span className="etb-l">Renk:</span>
+        <button className="etb-b etb-c" onMouseDown={prevent} onClick={()=>applyStyle('color','#c00')} title="Kırmızı">🔴</button>
+        <button className="etb-b etb-c" onMouseDown={prevent} onClick={()=>applyStyle('color','#2563eb')} title="Mavi">🔵</button>
+        <button className="etb-b etb-c" onMouseDown={prevent} onClick={()=>applyStyle('color','#1a1a1a')} title="Siyah">⚫</button>
+      </div>
+      {/* SATIR 2: Sadece Ders Notu / Kitap Sayfası için — vurgu + hazır kutular */}
+      {isLearning&&<div className="etb-row etb-row2">
+        <span className="etb-l">Vurgu:</span>
+        <button className="etb-b etb-h" onMouseDown={prevent} onClick={()=>applyStyle('backgroundColor','#fef3c7')} title="Sarı" style={{background:'#fef3c7'}}>H</button>
+        <button className="etb-b etb-h" onMouseDown={prevent} onClick={()=>applyStyle('backgroundColor','#dbeafe')} title="Mavi" style={{background:'#dbeafe'}}>H</button>
+        <button className="etb-b etb-h" onMouseDown={prevent} onClick={()=>applyStyle('backgroundColor','#dcfce7')} title="Yeşil" style={{background:'#dcfce7'}}>H</button>
+        <button className="etb-b etb-h" onMouseDown={prevent} onClick={()=>applyStyle('backgroundColor','#fde0e0')} title="Kırmızı" style={{background:'#fde0e0'}}>H</button>
+        <div className="etb-sep"/>
+        <span className="etb-l">Hazır kutu (önce metni seçin):</span>
+        <button className="etb-b etb-bk etb-bk-def" onMouseDown={prevent} onClick={()=>wrapBox('bk-box bk-def')} title="Tanım kutusu">📘 Tanım</button>
+        <button className="etb-b etb-bk etb-bk-thm" onMouseDown={prevent} onClick={()=>wrapBox('bk-box bk-thm')} title="Teorem kutusu">📐 Teorem</button>
+        <button className="etb-b etb-bk etb-bk-prop" onMouseDown={prevent} onClick={()=>wrapBox('bk-box bk-prop')} title="Özellik kutusu">📗 Özellik</button>
+        <button className="etb-b etb-bk etb-bk-warn" onMouseDown={prevent} onClick={()=>wrapBox('bk-box bk-warn')} title="Dikkat kutusu">⚠️ Dikkat</button>
+        <button className="etb-b etb-bk etb-bk-tip" onMouseDown={prevent} onClick={()=>wrapBox('bk-box bk-tip')} title="İpucu kutusu">💡 İpucu</button>
+        <button className="etb-b etb-bk etb-bk-ex" onMouseDown={prevent} onClick={()=>wrapBox('bk-example')} title="Örnek kutusu">✏️ Örnek</button>
+        <button className="etb-b etb-bk etb-bk-sol" onMouseDown={prevent} onClick={()=>wrapBox('bk-solve')} title="Çözüm kutusu">✅ Çözüm</button>
+      </div>}
     </div>
   );
 }
 
-function Page({qs,tpl,cols,cfg,ff,r,onUpdateQ,pageNum,totalPages,startNum,qSize,spacings,onUpdateSpacing,imgSizes,onUpdateImgSize,imgOffsets,onUpdateImgOffset}){
+function Page({qs,tpl,cols,cfg,ff,r,onUpdateQ,pageNum,totalPages,startNum,qSize,spacings,onUpdateSpacing,imgSizes,onUpdateImgSize,imgOffsets,onUpdateImgOffset,imgCrops,onUpdateImgCrop,onResetImgCrop,qImgs,onAddQImg,onUpdQImgSize,onUpdQImgOffset,onDelQImg,onAddToBank,answers,qNums,onUpdQNum}){
   const sn=startNum||1;
   const fs=qSize||11;
-  const per=Math.ceil(qs.length/cols);
-  const gs=[];for(let i=0;i<cols;i++)gs.push(qs.slice(i*per,(i+1)*per).map((q,qi)=>({q,n:sn+i*per+qi,idx:i*per+qi})));
-  return(<div className={`A4 T${tpl}`} ref={r} style={{fontFamily:ff,fontSize:fs+'pt'}}>
-    {tpl==="yaprak"&&<><div className="Hbar"><div className="Hbl"><div className="Hbk HbkE" contentEditable suppressContentEditableWarning>{cfg.konu||"MATEMATİK"}</div><div className="Hba HbaE" contentEditable suppressContentEditableWarning>{cfg.alt||"Konu Testi"}</div></div><div className="Hbr"><div className="Hbt">TEST</div><div className="Hbn">{cfg.no||"01"}</div></div></div>{cfg.showInfo!==false&&<div className="Hinf HinfE" contentEditable suppressContentEditableWarning>Ad Soyad: ...............................................................     D: .........  Y: .........  B: .........</div>}</>}
-    {tpl==="sinav"&&<><div className="Hhd HhdE" contentEditable suppressContentEditableWarning><div className="Hok">{cfg.okul||"………… OKULU"}</div><div className="Hbs">{cfg.baslik||"MATEMATİK YAZILI SINAVI"}</div></div><div className="Hsi HsiE" contentEditable suppressContentEditableWarning>Adı Soyadı: ..............................   Sınıf/No: ....../......   Süre: {cfg.sure||"40"} dk   Soru: {qs.length}</div></>}
+  // Ders Notu şablonunda kendi sütun ayarı (cfg.konuCols), diğerlerinde genel cols
+  const effCols=tpl==="konu"?(cfg.konuCols||1):cols;
+  const per=Math.ceil(qs.length/effCols);
+  const gs=[];for(let i=0;i<effCols;i++)gs.push(qs.slice(i*per,(i+1)*per).map((q,qi)=>({q,n:sn+i*per+qi,idx:i*per+qi})));
+  return(<div className={`A4 T${tpl}${cfg.stretch?" A4-stretch":""}${cfg.watermark&&cfg.watermarkPrint===false?" wm-screen-only":""}${tpl==="konu"&&cfg.sadeBaski?" sade":""}`} ref={r} style={{fontFamily:ff,fontSize:fs+'pt'}}>
+    {cfg.watermark&&<div className="A4-wm" aria-hidden="true" style={{
+      position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",
+      pointerEvents:"none",overflow:"hidden",zIndex:0,userSelect:"none"
+    }}>
+      <div style={{
+        fontSize:(cfg.watermarkSize||64)+"pt",
+        color:"#000",
+        opacity:(cfg.watermarkOpacity||10)/100,
+        transform:`rotate(${cfg.watermarkAngle!==undefined?cfg.watermarkAngle:-30}deg)`,
+        fontWeight:700,
+        letterSpacing:"4px",
+        whiteSpace:"nowrap",
+        fontFamily:"inherit"
+      }}>{cfg.watermark}</div>
+    </div>}
+    {tpl==="yaprak"&&cfg.showHeader!==false&&<><div className="Hbar"><div className="Hbl"><div className="Hbk HbkE" contentEditable suppressContentEditableWarning>{cfg.konu||"MATEMATİK"}</div><div className="Hba HbaE" contentEditable suppressContentEditableWarning>{cfg.alt||"Konu Testi"}</div></div><div className="Hbr"><div className="Hbt">TEST</div><div className="Hbn">{cfg.no||"01"}</div></div></div>{cfg.showInfo!==false&&<div className="Hinf HinfE" contentEditable suppressContentEditableWarning>Ad Soyad: ...............................................................     D: .........  Y: .........  B: .........</div>}</>}
+    {tpl==="sinav"&&cfg.showHeader!==false&&<><div className="Hhd HhdE" contentEditable suppressContentEditableWarning><div className="Hok">{cfg.okul||"………… OKULU"}</div><div className="Hbs">{cfg.baslik||((cfg.ders||"MATEMATİK").toUpperCase()+" YAZILI SINAVI")}</div></div><div className="Hsi HsiE" contentEditable suppressContentEditableWarning>Adı Soyadı: ..............................   Sınıf/No: ....../......   Süre: {cfg.sure||"40"} dk   Soru: {qs.length}</div></>}
     {tpl==="ders"&&<div className="Hdh"><div className="Hdu HduE" contentEditable suppressContentEditableWarning>{cfg.unite||"ÜNİTE 1"}</div><div className="Hdb HdbE" contentEditable suppressContentEditableWarning>{cfg.baslik||"ALIŞTIRMALAR"}</div><div className="Hdl"/></div>}
     {tpl==="duz"&&cfg.baslik&&<div className="Hzh HzhE" contentEditable suppressContentEditableWarning>{cfg.baslik}</div>}
     
@@ -1613,19 +2088,22 @@ function Page({qs,tpl,cols,cfg,ff,r,onUpdateQ,pageNum,totalPages,startNum,qSize,
       <div className="Bzh-title">📋 {cfg.baslik||"ÖZET"}</div>
       <div className="Bzh-line"/>
     </div>}
-    <div className={`QG c${cols}`}>
+    <div className={`QG c${effCols}`}>
       {gs.map((g,gi)=>{
         const items=[];
         if(gi>0) items.push(<div key={`div${gi}`} className="QDiv">{cfg.divText?<span className="QDt">{cfg.divText}</span>:<span className="QDl"/>}</div>);
         items.push(<div key={`col${gi}`} className="QC">{g.map(({q,n,idx})=>{
         const ns=cfg.numStyle||"circle";
-        const numText=ns==="plain"?n+")":ns==="dot"?n+".":ns==="paren"?"("+n+")":ns==="dash"?n+" –":ns==="none"?"":String(n);
-        const numCls="QN"+(ns==="circle"?" QNcirc":ns==="square"?" QNsq":"");
-        return <div key={n} className="QI" style={{marginBottom:(spacings&&spacings[idx]!==undefined?spacings[idx]:26)+'px'}}>
-        {ns!=="none"&&<div className={numCls}>{numText}</div>}
+        const ov=(qNums&&typeof qNums[idx]==='string'&&qNums[idx].trim()!=='')?qNums[idx]:null;
+        const numText=ov!==null?ov:(ns==="plain"?n+")":ns==="dot"?n+".":ns==="paren"?"("+n+")":ns==="dash"?n+" –":ns==="none"?"":String(n));
+        const numCls="QN"+(ns==="circle"?" QNcirc":ns==="square"?" QNsq":"")+(onUpdQNum?" QNed":"");
+        return <div key={`q${idx}-${pageNum}`} className="QI" style={{marginBottom:(spacings&&spacings[idx]!==undefined?spacings[idx]:(cfg.qSpace||26))+'px'}}>
+        {ns!=="none"&&<div className={numCls} contentEditable={!!onUpdQNum} suppressContentEditableWarning title={onUpdQNum?"Tıklayıp numarayı değiştir (boş bırakırsan otomatiğe döner)":undefined} onBlur={e=>{if(onUpdQNum)onUpdQNum(idx,e.currentTarget.textContent||'');}}>{numText}</div>}
         <div className="QX">
           {(typeof q==='string'&&q.includes('<img '))?<div className="QIG">
-            <img src={(q.match(/src="([^"]+)"/)||[])[1]||""} className="QIM" style={{transform:`scale(${(imgSizes&&imgSizes[idx]!==undefined?imgSizes[idx]:100)/100}) translateX(${imgOffsets&&imgOffsets[idx]!==undefined?imgOffsets[idx]:0}px)`,transformOrigin:'top left'}}/>
+            {(()=>{const cr=(imgCrops&&imgCrops[idx])||{top:0,right:0,bottom:0,left:0};
+              return <img src={(q.match(/src="([^"]+)"/)||[])[1]||""} className="QIM" style={{transform:`scale(${(imgSizes&&imgSizes[idx]!==undefined?imgSizes[idx]:100)/100}) translateX(${imgOffsets&&imgOffsets[idx]!==undefined?imgOffsets[idx]:0}px)`,transformOrigin:'top left',clipPath:`inset(${cr.top}% ${cr.right}% ${cr.bottom}% ${cr.left}%)`,marginTop:cr.top?`-${cr.top}%`:0,marginBottom:cr.bottom?`-${cr.bottom}%`:0}}/>;
+            })()}
             {onUpdateImgSize&&<div className="QIS">
               <button className="QISb" onMouseDown={e=>e.preventDefault()} onClick={()=>{const o=imgOffsets&&imgOffsets[idx]!==undefined?imgOffsets[idx]:0;onUpdateImgOffset(idx,o-15);}}>◀</button>
               <button className="QISb" onMouseDown={e=>e.preventDefault()} onClick={()=>onUpdateImgSize(idx,Math.max(30,(imgSizes&&imgSizes[idx]!==undefined?imgSizes[idx]:100)-10))}>🔍−</button>
@@ -1633,47 +2111,198 @@ function Page({qs,tpl,cols,cfg,ff,r,onUpdateQ,pageNum,totalPages,startNum,qSize,
               <button className="QISb" onMouseDown={e=>e.preventDefault()} onClick={()=>onUpdateImgSize(idx,Math.min(200,(imgSizes&&imgSizes[idx]!==undefined?imgSizes[idx]:100)+10))}>🔍+</button>
               <button className="QISb" onMouseDown={e=>e.preventDefault()} onClick={()=>{const o=imgOffsets&&imgOffsets[idx]!==undefined?imgOffsets[idx]:0;onUpdateImgOffset(idx,o+15);}}>▶</button>
             </div>}
+            {onUpdateImgCrop&&<div className="QIS QIS-crop" style={{top:32}} title="Resmi kenardan kırp">
+              <span className="QISt" style={{fontSize:9,marginRight:2}}>✂️</span>
+              <button className="QISb" onMouseDown={e=>e.preventDefault()} onClick={()=>onUpdateImgCrop(idx,'top',3)} title="Üstten kırp (+3%)">⬆</button>
+              <button className="QISb" onMouseDown={e=>e.preventDefault()} onClick={()=>onUpdateImgCrop(idx,'left',3)} title="Soldan kırp (+3%)">⬅</button>
+              <button className="QISb" onMouseDown={e=>e.preventDefault()} onClick={()=>onUpdateImgCrop(idx,'right',3)} title="Sağdan kırp (+3%)">➡</button>
+              <button className="QISb" onMouseDown={e=>e.preventDefault()} onClick={()=>onUpdateImgCrop(idx,'bottom',3)} title="Alttan kırp (+3%)">⬇</button>
+              {imgCrops&&imgCrops[idx]&&<button className="QISb" onMouseDown={e=>e.preventDefault()} onClick={()=>onResetImgCrop(idx)} title="Kırpmayı sıfırla" style={{background:"#fee",color:"#c00"}}>↺</button>}
+            </div>}
           </div>:
             <div className="QT QTE" contentEditable suppressContentEditableWarning
               dangerouslySetInnerHTML={{__html:q}}
               onBlur={e=>{if(onUpdateQ)onUpdateQ(idx,e.currentTarget.innerHTML);}}/>
           }
+          {qImgs&&qImgs[idx]&&<div className="QXI" style={{textAlign:"left",margin:"6px 0",position:"relative"}}>
+            <img src={qImgs[idx].src} className="QXIM" style={{maxWidth:"100%",width:qImgs[idx].size+"%",transform:`translateX(${qImgs[idx].offset}px)`,display:"block"}}/>
+            {onUpdQImgSize&&<div className="QXIC q-imgbtn" style={{position:"absolute",top:2,right:2,display:"flex",gap:3,background:"rgba(255,255,255,.95)",border:"1px solid #ccc",borderRadius:4,padding:"2px 4px",fontSize:11,zIndex:5}}>
+              <button onMouseDown={e=>e.preventDefault()} onClick={()=>onUpdQImgOffset(idx,(qImgs[idx].offset||0)-15)} style={{border:"none",background:"#eee",borderRadius:3,padding:"2px 5px",cursor:"pointer"}}>◀</button>
+              <button onMouseDown={e=>e.preventDefault()} onClick={()=>onUpdQImgSize(idx,(qImgs[idx].size||100)-10)} style={{border:"none",background:"#eee",borderRadius:3,padding:"2px 5px",cursor:"pointer"}}>🔍−</button>
+              <span style={{padding:"2px 4px",fontWeight:600,minWidth:30,textAlign:"center"}}>{qImgs[idx].size}%</span>
+              <button onMouseDown={e=>e.preventDefault()} onClick={()=>onUpdQImgSize(idx,(qImgs[idx].size||100)+10)} style={{border:"none",background:"#eee",borderRadius:3,padding:"2px 5px",cursor:"pointer"}}>🔍+</button>
+              <button onMouseDown={e=>e.preventDefault()} onClick={()=>onUpdQImgOffset(idx,(qImgs[idx].offset||0)+15)} style={{border:"none",background:"#eee",borderRadius:3,padding:"2px 5px",cursor:"pointer"}}>▶</button>
+              <button onMouseDown={e=>e.preventDefault()} onClick={()=>onDelQImg(idx)} title="Resmi kaldır" style={{border:"none",background:"#fee",color:"#c00",borderRadius:3,padding:"2px 5px",cursor:"pointer",fontWeight:700}}>✕</button>
+            </div>}
+          </div>}
           <div className="QOA" contentEditable suppressContentEditableWarning data-ph="Seçenek eklemek için tıklayın: A) ... B) ... (yan yana veya alt alta)"/>
-          {tpl==="sinav"&&<div className="QLS"><div className="QL"/><div className="QL"/></div>}
+          {tpl==="sinav"&&cfg.cevapSatiri===true&&<div className="QLS"><div className="QL"/><div className="QL"/></div>}
           {onUpdateSpacing&&<div className="QSP">
-            <button className="QSPb" onMouseDown={e=>e.preventDefault()} onClick={()=>onUpdateSpacing(idx,Math.max(0,(spacings&&spacings[idx]!==undefined?spacings[idx]:26)-10))}>−</button>
-            <span className="QSPt">{spacings&&spacings[idx]!==undefined?spacings[idx]:26}px</span>
-            <button className="QSPb" onMouseDown={e=>e.preventDefault()} onClick={()=>onUpdateSpacing(idx,Math.min(200,(spacings&&spacings[idx]!==undefined?spacings[idx]:26)+10))}>+</button>
+            {onAddToBank&&<button className="QSPb q-imgbtn" onMouseDown={e=>e.preventDefault()} onClick={()=>onAddToBank(idx)} title="Bu soruyu bankaya ekle" style={{background:"#fff3e0",borderColor:"#ffb74d"}}>🗂️+</button>}
+            {onAddQImg&&!(qImgs&&qImgs[idx])&&<button className="QSPb q-imgbtn" onMouseDown={e=>e.preventDefault()} onClick={()=>onAddQImg(idx)} title="Bu soruya resim ekle" style={{background:"#e3f2fd",borderColor:"#90caf9"}}>📷+</button>}
+            <button className="QSPb" onMouseDown={e=>e.preventDefault()} onClick={()=>onUpdateSpacing(idx,Math.max(0,(spacings&&spacings[idx]!==undefined?spacings[idx]:(cfg.qSpace||26))-10))}>−</button>
+            <span className="QSPt">{spacings&&spacings[idx]!==undefined?spacings[idx]:(cfg.qSpace||26)}px</span>
+            <button className="QSPb" onMouseDown={e=>e.preventDefault()} onClick={()=>onUpdateSpacing(idx,Math.min(300,(spacings&&spacings[idx]!==undefined?spacings[idx]:(cfg.qSpace||26))+10))}>+</button>
           </div>}
         </div>
       </div>})}</div>);
         return items;
       })}
     </div>
-    {tpl==="yaprak"&&cfg.showCevap!==false&&<div className="CV"><div className="CVT">CEVAP ANAHTARI</div><div className="CVG">{qs.map((_,i)=><div key={i} className="CVR"><b className="CVN">{(startNum||1)+i}</b>{["A","B","C","D","E"].slice(0,cfg.opt||5).map(l=><span key={l} className="CVC">{l}</span>)}</div>)}</div></div>}
+    {(tpl==="yaprak"||tpl==="sinav")&&cfg.showCevap!==false&&<div className="CV"><div className="CVT">CEVAP ANAHTARI</div><div className="CVG">{qs.map((_,i)=>{const ans=((answers&&answers[(sn-1)+i])||"").trim();const isL=/^[A-Ea-e]$/.test(ans);return <div key={i} className="CVR"><b className="CVN">{sn+i}</b>{isL?["A","B","C","D","E"].slice(0,cfg.opt||5).map(l=><span key={l} className={"CVC"+(l===ans.toUpperCase()?" CVC-on":"")}>{l}</span>):(ans?<span className="CVA">{ans}</span>:["A","B","C","D","E"].slice(0,cfg.opt||5).map(l=><span key={l} className="CVC">{l}</span>))}</div>;})}</div></div>}
     {tpl==="sinav"&&<div className="SF">Başarılar. <b>Puan: ..../100</b></div>}
     {totalPages>1&&<div className="PF">Sayfa {pageNum} / {totalPages}</div>}
   </div>);
 }
 
 /* ═══ MAIN ═══ */
+function Sec({n,title,icon,children,openSec,setOpenSec,highlight}){
+  return(<div className={`acc${highlight?" acc-hl":""}`}>
+    <button className={`acc-h${openSec===n?" acc-on":""}${highlight?" acc-h-hl":""}`} onClick={()=>setOpenSec(openSec===n?0:n)}><span className="acc-i">{icon}</span><span className="acc-t">{title}</span><span className="acc-arr">{openSec===n?"▾":"▸"}</span></button>
+    {openSec===n&&<div className={`acc-body${highlight?" acc-body-hl":""}`}>{children}</div>}
+  </div>);
+}
+
 function App(){
   const[font,setFont]=useState("stix");
   const[tpl,setTpl]=useState("yaprak");const[cols,setCols]=useState(2);
-  const[cfg,setCfg]=useState({konu:"MATEMATİK",alt:"Konu Testi",no:"01",opt:5,okul:"",baslik:"",sure:"40",unite:"ÜNİTE 1",sayfaNo:"",numStyle:"circle",showInfo:true,showCevap:true,divText:""});
+  const[cfg,setCfg]=useState({konu:"MATEMATİK",alt:"Konu Testi",no:"01",opt:5,okul:"",baslik:"",sure:"40",unite:"ÜNİTE 1",sayfaNo:"",numStyle:"circle",showInfo:true,showCevap:true,divText:"",ders:"Matematik"});
   const uc=(k,v)=>setCfg(c=>({...c,[k]:v}));
   const[qs,setQs]=useState([]);const[show,setShow]=useState(false);
   const[busy,setBusy]=useState(false);const[err,setErr]=useState("");
   const[cleaning,setCleaning]=useState(false);
   const[qSize,setQSize]=useState(11);const[perPage,setPerPage]=useState(10);
   const[spacings,setSpacings]=useState({});const[imgSizes,setImgSizes]=useState({});const[imgOffsets,setImgOffsets]=useState({});
+  const[imgCrops,setImgCrops]=useState({}); // {idx: {top, right, bottom, left}} — yüzde
+  const[answers,setAnswers]=useState({}); // {soru index: "A" veya "x=3"} — cevap anahtarı
+  const[qNums,setQNums]=useState({}); // {soru index: "5" veya "1a"} — özel soru numarası (boş anahtar = otomatik)
+  const updImgCrop=(idx,side,delta)=>setImgCrops(p=>{
+    const cur=p[idx]||{top:0,right:0,bottom:0,left:0};
+    const next={...cur,[side]:Math.max(0,Math.min(40,cur[side]+delta))};
+    return{...p,[idx]:next};
+  });
+  const resetImgCrop=(idx)=>setImgCrops(p=>{const n={...p};delete n[idx];return n;});
+  const[qImgs,setQImgs]=useState({}); // {idx: {src, size:100, offset:0}}
+  const qImgFileRef=useRef();const qImgIdxRef=useRef(null);
+  const addQImg=(i)=>{qImgIdxRef.current=i;qImgFileRef.current?.click();};
+  const onQImgFile=(e)=>{
+    const f=e.target.files?.[0];if(!f)return;
+    const idx=qImgIdxRef.current;if(idx==null){e.target.value='';return;}
+    const r=new FileReader();
+    r.onload=()=>{setQImgs(p=>({...p,[idx]:{src:r.result,size:100,offset:0}}));};
+    r.readAsDataURL(f);
+    e.target.value='';
+  };
+  const updQImgSize=(i,v)=>setQImgs(p=>p[i]?({...p,[i]:{...p[i],size:Math.max(20,Math.min(200,v))}}):p);
+  const updQImgOffset=(i,v)=>setQImgs(p=>p[i]?({...p,[i]:{...p[i],offset:Math.max(-300,Math.min(300,v))}}):p);
+  const delQImg=(i)=>setQImgs(p=>{const n={...p};delete n[i];return n;});
   const[history,setHistory]=useState([]);
   const[converting,setConverting]=useState(null);
   const[txt,setTxt]=useState("");
   const[openSec,setOpenSec]=useState(1);
   const[drawMode,setDrawMode]=useState(false);
   const[uploadMode,setUploadMode]=useState(false);
-  const[uploadSub,setUploadSub]=useState("draw");
+  const[uploadSub,setUploadSub]=useState(""); // "" = yöntem seçilmedi, sonra "draw"/"cam"/"file"/"txt"/"pdf"
+  // === PDF KIRPMA STATE ===
+  const[pdfDoc,setPdfDoc]=useState(null);
+  const[pdfPage,setPdfPage]=useState(1);
+  const[pdfTotalPages,setPdfTotalPages]=useState(0);
+  const[pdfFileName,setPdfFileName]=useState("");
+  const[pdfBusy,setPdfBusy]=useState(false);
+  const[pdfCropRect,setPdfCropRect]=useState(null); // {x,y,w,h} canvas pikselinde
+  const pdfCanvasRef=useRef();
+  const pdfDragRef=useRef({down:false,start:null});
+  // PDF dosyasını yükle
+  const onPdfFile=async(e)=>{
+    const f=e.target.files?.[0];if(!f)return;
+    e.target.value='';
+    if(!window.pdfjsLib){alert("PDF kütüphanesi henüz yüklendi/yüklenmiyor. Birkaç saniye bekleyip tekrar deneyin.");return;}
+    // Worker'ın tanımlı olduğundan emin ol (sayfa cache'lenmişse veya init kaçmışsa)
+    if(window.pdfjsLib.GlobalWorkerOptions&&!window.pdfjsLib.GlobalWorkerOptions.workerSrc){
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+    setPdfBusy(true);
+    try{
+      const ab=await f.arrayBuffer();
+      const doc=await window.pdfjsLib.getDocument({data:ab}).promise;
+      setPdfDoc(doc);
+      setPdfTotalPages(doc.numPages);
+      setPdfPage(1);
+      setPdfFileName(f.name);
+      setPdfCropRect(null);
+    }catch(ex){
+      alert("PDF açılamadı: "+ex.message);
+    }
+    setPdfBusy(false);
+  };
+  // Sayfayı canvas'a çiz
+  const renderPdfPage=async(num)=>{
+    if(!pdfDoc||!pdfCanvasRef.current)return;
+    setPdfBusy(true);
+    try{
+      const page=await pdfDoc.getPage(num);
+      const viewport=page.getViewport({scale:1.5});
+      const c=pdfCanvasRef.current;
+      c.width=viewport.width;c.height=viewport.height;
+      const ctx=c.getContext("2d");
+      await page.render({canvasContext:ctx,viewport}).promise;
+      setPdfCropRect(null);
+    }catch(ex){console.error(ex);}
+    setPdfBusy(false);
+  };
+  useEffect(()=>{if(pdfDoc)renderPdfPage(pdfPage);},[pdfDoc,pdfPage]);
+  // Kırpma: fare ile dikdörtgen seç
+  const onPdfMouseDown=(e)=>{
+    const r=pdfCanvasRef.current.getBoundingClientRect();
+    const x=e.clientX-r.left,y=e.clientY-r.top;
+    pdfDragRef.current={down:true,start:{x,y}};
+    setPdfCropRect({x,y,w:0,h:0});
+  };
+  const onPdfMouseMove=(e)=>{
+    if(!pdfDragRef.current.down)return;
+    const r=pdfCanvasRef.current.getBoundingClientRect();
+    const x=e.clientX-r.left,y=e.clientY-r.top;
+    const s=pdfDragRef.current.start;
+    setPdfCropRect({x:Math.min(s.x,x),y:Math.min(s.y,y),w:Math.abs(x-s.x),h:Math.abs(y-s.y)});
+  };
+  const onPdfMouseUp=()=>{pdfDragRef.current.down=false;};
+  // Touch desteği
+  const onPdfTouchStart=(e)=>{e.preventDefault();const t=e.touches[0];onPdfMouseDown(t);};
+  const onPdfTouchMove=(e)=>{e.preventDefault();const t=e.touches[0];onPdfMouseMove(t);};
+  const onPdfTouchEnd=(e)=>{e.preventDefault();onPdfMouseUp();};
+  // Seçilen alanı kırp ve sayfaya ekle
+  const cropAndAddPdf=()=>{
+    if(!pdfCropRect||pdfCropRect.w<10||pdfCropRect.h<10){alert("Önce farkenin ile bir alan seçin (sürükleyerek çizin).");return;}
+    const src=pdfCanvasRef.current;
+    const rect=src.getBoundingClientRect();
+    const sx=src.width/rect.width;
+    const sy=src.height/rect.height;
+    const cx=Math.round(pdfCropRect.x*sx);
+    const cy=Math.round(pdfCropRect.y*sy);
+    const cw=Math.round(pdfCropRect.w*sx);
+    const ch=Math.round(pdfCropRect.h*sy);
+    const out=document.createElement("canvas");
+    out.width=cw;out.height=ch;
+    out.getContext("2d").drawImage(src,cx,cy,cw,ch,0,0,cw,ch);
+    const dataUrl=out.toDataURL("image/png");
+    saveHistory();
+    setQs(p=>[...p,'<img src="'+dataUrl+'" style="max-width:100%;height:auto"/>']);
+    setShow(true);
+    setPdfCropRect(null);
+    setUploadSub(""); // 4 yöntem ekranına dön
+  };
+  const closePdf=()=>{setPdfDoc(null);setPdfPage(1);setPdfTotalPages(0);setPdfFileName("");setPdfCropRect(null);};
+  // AI Test Üret özelliği kaldırıldı (şekilli sorular üretemiyor, gereksiz oldu)
+  // generateAITest fonksiyonu kaldırıldı — şekilli sorular üretemediği için kullanışsızdı
+  // Soru Ekle bölümü her açıldığında 4 yöntem ekranına dön
+  const wasOpenRef=useRef(false);
+  useEffect(()=>{
+    const isOpenNow=(openSec===1);
+    if(!wasOpenRef.current&&isOpenNow){
+      setUploadSub("");
+    }
+    wasOpenRef.current=isOpenNow;
+  },[openSec]);
   const[apiKey,setApiKey]=useState(GEMINI_KEY);
   const[showKey,setShowKey]=useState(false);
   const doSaveKey=()=>{const k=apiKey.trim();GEMINI_KEY=k;try{localStorage.setItem("ms_api_key",k);}catch(e){}setShowKey(false);setErr("");};
@@ -1681,49 +2310,534 @@ function App(){
   const pvRef=useRef();
   const ff=(FONTS.find(f=>f.id===font)||FONTS[0]).f;
 
+  // === OTOMATİK KAYIT ===
+  const[saveStatus,setSaveStatus]=useState(""); // "Kaydediliyor..." / "Kaydedildi 14:32"
+  const[autoLoaded,setAutoLoaded]=useState(false);
+  const saveTimer=useRef(null);
+  // Sayfa ilk açıldığında önceki çalışmayı sor
+  useEffect(()=>{
+    if(autoLoaded)return;
+    try{
+      const raw=localStorage.getItem("ms_autosave");
+      if(!raw){setAutoLoaded(true);return;}
+      const d=JSON.parse(raw);
+      if(!d||!d.qs||!d.qs.length){setAutoLoaded(true);return;}
+      const dt=d.savedAt?new Date(d.savedAt).toLocaleString("tr-TR"):"bilinmeyen tarih";
+      if(confirm(`Önceki çalışmanız bulundu (${d.qs.length} soru, ${dt}).\n\nGeri yüklensin mi?\n\nTAMAM = Geri yükle\nİPTAL = Yeni başla (eski kayıt silinir)`)){
+        if(d.qs)setQs(d.qs);
+        if(d.cfg)setCfg(d.cfg);
+        if(d.tpl)setTpl(d.tpl);
+        if(d.cols)setCols(d.cols);
+        if(d.qSize)setQSize(d.qSize);
+        if(d.perPage)setPerPage(d.perPage);
+        if(d.font)setFont(d.font);
+        if(d.spacings)setSpacings(d.spacings);
+        if(d.imgSizes)setImgSizes(d.imgSizes);
+        if(d.imgOffsets)setImgOffsets(d.imgOffsets);
+        if(d.qImgs)setQImgs(d.qImgs);
+        if(d.answers)setAnswers(d.answers);
+        if(d.qNums)setQNums(d.qNums);
+        if(d.qs.length>0)setShow(true);
+      }else{
+        localStorage.removeItem("ms_autosave");
+      }
+    }catch(e){console.warn("autoload:",e);}
+    setAutoLoaded(true);
+  },[autoLoaded]);
+  // State değişince debounced kayıt
+  useEffect(()=>{
+    if(!autoLoaded)return;
+    if(!qs.length)return;
+    setSaveStatus("Kaydediliyor...");
+    if(saveTimer.current)clearTimeout(saveTimer.current);
+    saveTimer.current=setTimeout(()=>{
+      try{
+        const data={qs,cfg,tpl,cols,qSize,perPage,font,spacings,imgSizes,imgOffsets,qImgs,answers,qNums,savedAt:Date.now()};
+        const json=JSON.stringify(data);
+        // localStorage limiti ~5MB, fazla resim varsa uyar
+        if(json.length>4500000){
+          setSaveStatus("⚠ Veri çok büyük, kaydedilemedi (resimleri silin)");
+          return;
+        }
+        localStorage.setItem("ms_autosave",json);
+        const t=new Date().toLocaleTimeString("tr-TR",{hour:"2-digit",minute:"2-digit"});
+        setSaveStatus(`✓ Kaydedildi ${t}`);
+      }catch(e){
+        setSaveStatus("⚠ Kayıt hatası: "+e.message);
+      }
+    },800); // 0.8 saniye sessizlikten sonra kaydet
+    return()=>{if(saveTimer.current)clearTimeout(saveTimer.current);};
+  },[qs,cfg,tpl,cols,qSize,perPage,font,spacings,imgSizes,imgOffsets,qImgs,answers,qNums,autoLoaded]);
+  // Manuel "yeni belge" butonu
+  const newDoc=()=>{
+    if(qs.length>0&&!confirm("Yeni belge başlat? Mevcut çalışma silinir."))return;
+    setQs([]);setShow(false);setSpacings({});setImgSizes({});setImgOffsets({});setQImgs({});setAnswers({});setQNums({});setHistory([]);
+    localStorage.removeItem("ms_autosave");
+    setSaveStatus("");
+  };
+
+  // === SORU BANKASI ===
+  const[bank,setBank]=useState(()=>{
+    try{return JSON.parse(localStorage.getItem("ms_bank")||"[]");}catch(e){return[];}
+  });
+  const[bankFilter,setBankFilter]=useState({subject:"",grade:"",topic:"",difficulty:"",search:""});
+  const[bankAddIdx,setBankAddIdx]=useState(null); // hangi soru bankaya eklenecek
+  const[bankMeta,setBankMeta]=useState({subject:"Matematik",grade:"9",topic:"",difficulty:"Orta"});
+  const persistBank=(b)=>{
+    setBank(b);
+    try{localStorage.setItem("ms_bank",JSON.stringify(b));}catch(e){alert("Banka kaydedilemedi: "+e.message);}
+    // Diske de yedekle (sunucu çalışıyorsa) — tarayıcı verisi silinse bile banka kaybolmaz
+    try{fetch("/api/bank",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}).catch(()=>{});}catch(e){}
+  };
+  // Açılışta: localStorage boşsa diskteki yedeği geri yükle
+  useEffect(()=>{
+    let cur=[];try{cur=JSON.parse(localStorage.getItem("ms_bank")||"[]");}catch(e){}
+    if(cur&&cur.length)return; // localStorage doluysa dokunma
+    fetch("/api/bank").then(r=>r.ok?r.json():null).then(d=>{
+      if(Array.isArray(d)&&d.length){setBank(d);try{localStorage.setItem("ms_bank",JSON.stringify(d));}catch(e){}}
+    }).catch(()=>{});
+  },[]);
+  const addToBank=(idx)=>{setBankAddIdx(idx);setBankMeta(m=>({...m,topic:m.topic||""}));};
+  const confirmAddToBank=()=>{
+    if(bankAddIdx==null)return;
+    const q=qs[bankAddIdx];if(!q){setBankAddIdx(null);return;}
+    const item={
+      id:Date.now()+"_"+Math.random().toString(36).slice(2,7),
+      html:q,
+      img:qImgs[bankAddIdx]||null,
+      subject:bankMeta.subject,
+      grade:bankMeta.grade,
+      topic:bankMeta.topic.trim(),
+      difficulty:bankMeta.difficulty,
+      dateAdded:Date.now()
+    };
+    persistBank([item,...bank]);
+    setBankAddIdx(null);
+  };
+  const addAllToBank=()=>{
+    if(!qs.length)return;
+    if(!confirm(`${qs.length} sorunun tamamı "${bankMeta.subject} / ${bankMeta.grade}. sınıf / ${bankMeta.topic||'(konu yok)'}" etiketiyle bankaya eklensin mi?\n\nKonu/zorluk için önce tek bir soruya 'Bankaya Ekle' tıklayıp etiket belirlemeniz iyi olur.`))return;
+    const ts=Date.now();
+    const items=qs.map((q,i)=>({
+      id:ts+"_"+i+"_"+Math.random().toString(36).slice(2,7),
+      html:q,
+      img:qImgs[i]||null,
+      subject:bankMeta.subject,
+      grade:bankMeta.grade,
+      topic:bankMeta.topic.trim(),
+      difficulty:bankMeta.difficulty,
+      dateAdded:ts+i
+    }));
+    persistBank([...items,...bank]);
+    alert(items.length+" soru bankaya eklendi.");
+  };
+  const removeFromBank=(id)=>{
+    if(!confirm("Bu soru bankadan silinsin mi?"))return;
+    persistBank(bank.filter(b=>b.id!==id));
+  };
+  const clearBank=()=>{
+    if(!confirm(`Bankadaki TÜM ${bank.length} soru silinecek. Devam?`))return;
+    persistBank([]);
+  };
+  const addBankItemToPage=(item)=>{
+    saveHistory();
+    const newIdx=qs.length;
+    setQs([...qs,item.html]);
+    if(item.img){setQImgs(p=>({...p,[newIdx]:item.img}));}
+    setShow(true);
+  };
+  const addFilteredToPage=(items)=>{
+    if(!items.length){alert("Filtreye uyan soru yok.");return;}
+    if(!confirm(`${items.length} soru sayfaya eklensin mi?`))return;
+    saveHistory();
+    const startIdx=qs.length;
+    setQs([...qs,...items.map(it=>it.html)]);
+    setQImgs(p=>{
+      const n={...p};
+      items.forEach((it,i)=>{if(it.img)n[startIdx+i]=it.img;});
+      return n;
+    });
+    setShow(true);
+  };
+  const[randCount,setRandCount]=useState(10);
+  const addRandomToPage=(items)=>{
+    if(!items.length){alert("Filtreye uyan soru yok.");return;}
+    const n=Math.min(Math.max(1,randCount),items.length);
+    if(!confirm(`Filtredeki ${items.length} sorudan rastgele ${n} tanesi sayfaya eklensin mi?`))return;
+    // Fisher-Yates karıştırma
+    const arr=[...items];
+    for(let k=arr.length-1;k>0;k--){const j=Math.floor(Math.random()*(k+1));const t=arr[k];arr[k]=arr[j];arr[j]=t;}
+    const picked=arr.slice(0,n);
+    saveHistory();
+    const startIdx=qs.length;
+    setQs([...qs,...picked.map(it=>it.html)]);
+    setQImgs(p=>{const nn={...p};picked.forEach((it,i)=>{if(it.img)nn[startIdx+i]=it.img;});return nn;});
+    setShow(true);
+  };
+  const exportBank=()=>{
+    const json=JSON.stringify({version:1,exportedAt:new Date().toISOString(),items:bank},null,2);
+    const blob=new Blob([json],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download=`mathstudio_banka_${new Date().toISOString().slice(0,10)}.json`;a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  };
+  const importBankRef=useRef();
+  const importBank=()=>importBankRef.current?.click();
+  const onImportBankFile=(e)=>{
+    const f=e.target.files?.[0];if(!f)return;
+    const r=new FileReader();
+    r.onload=()=>{
+      try{
+        const d=JSON.parse(r.result);
+        const items=Array.isArray(d)?d:(d.items||[]);
+        if(!items.length){alert("Dosyada soru bulunamadı.");return;}
+        const mode=prompt(`${items.length} soru bulundu.\n\n1 = Mevcut bankaya EKLE\n2 = Mevcut bankayı DEĞİŞTİR\n\n1 veya 2 yazın:`,"1");
+        if(mode==="1"){persistBank([...items,...bank]);alert(items.length+" soru bankaya eklendi.");}
+        else if(mode==="2"){persistBank(items);alert("Banka değiştirildi.");}
+      }catch(err){alert("Dosya okunamadı: "+err.message);}
+    };
+    r.readAsText(f);
+    e.target.value='';
+  };
+  // Filtreli banka listesi
+  const filteredBank=bank.filter(it=>{
+    if(bankFilter.subject&&it.subject!==bankFilter.subject)return false;
+    if(bankFilter.grade&&String(it.grade)!==String(bankFilter.grade))return false;
+    if(bankFilter.difficulty&&it.difficulty!==bankFilter.difficulty)return false;
+    if(bankFilter.topic&&!(it.topic||"").toLowerCase().includes(bankFilter.topic.toLowerCase()))return false;
+    if(bankFilter.search){
+      const s=bankFilter.search.toLowerCase();
+      const txt=(it.html||"").replace(/<[^>]+>/g," ").toLowerCase();
+      if(!txt.includes(s)&&!(it.topic||"").toLowerCase().includes(s))return false;
+    }
+    return true;
+  });
+
+  // Çıkmış Sorular Arşivi geri çekildi — API limit pratik problem yaratıyordu, Soru Bankası odaklı plan.
+
   const saveHistory=()=>setHistory(p=>[...p.slice(-20),JSON.stringify(qs)]);
   const undo=()=>{if(!history.length)return;const prev=JSON.parse(history[history.length-1]);setQs(prev);setHistory(p=>p.slice(0,-1));if(prev.length)setShow(true);};
-  const delQ=(i)=>{saveHistory();const n=[...qs];n.splice(i,1);setQs(n);if(!n.length)setShow(false);};
-  const copyQ=(i)=>{saveHistory();const n=[...qs];n.splice(i+1,0,qs[i]);setQs(n);};
+  // Yardımcı: bir index map'ini silme/kopyalama/sıralama sonrasında yeniden indeksle
+  const _reindexDel=(p,i)=>{const o={};Object.keys(p).forEach(k=>{const ki=+k;if(ki<i)o[ki]=p[k];else if(ki>i)o[ki-1]=p[k];});return o;};
+  const _reindexCopy=(p,i)=>{const o={};Object.keys(p).forEach(k=>{const ki=+k;if(ki<=i)o[ki]=p[k];else o[ki+1]=p[k];});return o;};
+  const _reindexDrop=(p,from,toIdx,len)=>{const arr=[];for(let k=0;k<len;k++)arr.push(p[k]);const a=arr.splice(from,1)[0];arr.splice(toIdx,0,a);const o={};arr.forEach((v,idx)=>{if(v!==undefined&&v!=="")o[idx]=v;});return o;};
+  const delQ=(i)=>{saveHistory();const n=[...qs];n.splice(i,1);setQs(n);setAnswers(p=>_reindexDel(p,i));setQNums(p=>_reindexDel(p,i));if(!n.length)setShow(false);};
+  const copyQ=(i)=>{saveHistory();const n=[...qs];n.splice(i+1,0,qs[i]);setQs(n);setAnswers(p=>{const o=_reindexCopy(p,i);if(p[i]!==undefined)o[i+1]=p[i];return o;});setQNums(p=>_reindexCopy(p,i));};
   const[dragIdx,setDragIdx]=useState(null);const[overIdx,setOverIdx]=useState(null);
-  const handleDrop=(toIdx)=>{if(dragIdx===null||dragIdx===toIdx)return;saveHistory();const n=[...qs];const item=n.splice(dragIdx,1)[0];n.splice(toIdx,0,item);setQs(n);setDragIdx(null);setOverIdx(null);};
+  const handleDrop=(toIdx)=>{if(dragIdx===null||dragIdx===toIdx)return;saveHistory();const from=dragIdx;const n=[...qs];const item=n.splice(from,1)[0];n.splice(toIdx,0,item);setQs(n);setAnswers(p=>_reindexDrop(p,from,toIdx,qs.length));setQNums(p=>_reindexDrop(p,from,toIdx,qs.length));setDragIdx(null);setOverIdx(null);};
+  // Soru numarası override — boş gönderilirse otomatiğe döner
+  const updQNum=(idx,v)=>setQNums(p=>{const o={...p};if(!v||!String(v).trim())delete o[idx];else o[idx]=String(v).trim();return o;});
 
+  // Derse göre AI talimatına ek hints ekleyen helper
+  const dpr=(basePrompt)=>{
+    const hint=DERS_HINTS[cfg.ders]||"";
+    const dersTag=cfg.ders&&cfg.ders!=="Genel"?`\nAKTİF DERS: ${cfg.ders}\n`:"";
+    return basePrompt+dersTag+(hint?"\n"+hint+"\n":"");
+  };
   const scan=async(e)=>{const files=Array.from(e.target.files).filter(f=>f.type.startsWith("image/"));e.target.value="";if(!files.length)return;setBusy(true);setErr("");
     try{for(const file of files){const du=await new Promise(ok=>{const r=new FileReader();r.onload=()=>ok(r.result);r.readAsDataURL(file)});
       const b=du.split(",")[1],m=du.match(/^data:(image\/\w+);/)?.[1]||"image/jpeg";
-      const raw=await callAI([{type:"image",source:{type:"base64",media_type:m,data:b}},{type:"text",text:PROMPT_SCAN}]);
+      const raw=await callAI([{type:"image",source:{type:"base64",media_type:m,data:b}},{type:"text",text:dpr(PROMPT_SCAN)}]);
       const j=parseJ(raw);if(j.questions?.length){saveHistory();setQs(p=>[...p,...j.questions]);setShow(true);}
     }}catch(ex){setErr(ex.message==="Failed to fetch"?"Bağlantı kurulamadı.":ex.message);}setBusy(false);};
   const scanBook=async(e)=>{const files=Array.from(e.target.files).filter(f=>f.type.startsWith("image/"));e.target.value="";if(!files.length)return;setBusy(true);setErr("");
     try{for(const file of files){const du=await new Promise(ok=>{const r=new FileReader();r.onload=()=>ok(r.result);r.readAsDataURL(file)});
       const b=du.split(",")[1],m=du.match(/^data:(image\/\w+);/)?.[1]||"image/jpeg";
-      const raw=await callAI([{type:"image",source:{type:"base64",media_type:m,data:b}},{type:"text",text:PROMPT_BOOK}]);
+      const raw=await callAI([{type:"image",source:{type:"base64",media_type:m,data:b}},{type:"text",text:dpr(PROMPT_BOOK)}]);
       const j=parseJ(raw);if(j.questions?.length){saveHistory();setQs(p=>[...p,...j.questions]);setShow(true);}
     }}catch(ex){setErr(ex.message==="Failed to fetch"?"Bağlantı kurulamadı.":ex.message);}setBusy(false);};
   const scanImg=async(e)=>{const files=Array.from(e.target.files).filter(f=>f.type.startsWith("image/"));e.target.value="";if(!files.length)return;setCleaning(true);
     for(const file of files){try{const cleaned=await cleanImage(file);saveHistory();setQs(p=>[...p,'<img src="'+cleaned+'" style="max-width:100%;height:auto"/>']);setShow(true);}catch(err){const du=await new Promise(ok=>{const r=new FileReader();r.onload=()=>ok(r.result);r.readAsDataURL(file);});saveHistory();setQs(p=>[...p,'<img src="'+du+'" style="max-width:100%;height:auto"/>']);setShow(true);}}setCleaning(false);};
-  const reconvert=async(i)=>{setConverting(i);try{const raw=await callAI([{type:"text",text:PROMPT_SCAN+"\n\nBu soruyu düzelt ve yeniden çevir:\n"+qs[i]}]);const j=parseJ(raw);if(j.questions?.length){saveHistory();const n=[...qs];n[i]=j.questions[0];setQs(n);}}catch(e){}setConverting(null);};
-  const convertImgToText=async(i)=>{const q=qs[i];if(!q||!q.includes('<img'))return;setConverting(i);try{const src=q.match(/src="([^"]+)"/)?.[1];if(src){const b=src.split(",")[1],m=src.match(/^data:(image\/\w+);/)?.[1]||"image/png";const raw=await callAI([{type:"image",source:{type:"base64",media_type:m,data:b}},{type:"text",text:PROMPT_SCAN}]);const j=parseJ(raw);if(j.questions?.length){saveHistory();const n=[...qs];n[i]=j.questions[0];setQs(n);}}}catch(e){}setConverting(null);};
+
+  // === AKILLI MELEZ: Yazı LaTeX'e çevrilir, ŞEKİL orijinal fotoğraftan kırpılır ===
+  const[hybridBusy,setHybridBusy]=useState(false);
+  const scanHybrid=async(e)=>{
+    const files=Array.from(e.target.files).filter(f=>f.type.startsWith("image/"));
+    e.target.value="";if(!files.length)return;
+    if(!GEMINI_KEY){alert("API key gerekli — sağ üst 🔑'dan girin.");return;}
+    setHybridBusy(true);setErr("");setUploadSub("");
+    for(const file of files){
+      try{
+        // Orijinal görseli yükle
+        const du=await new Promise(ok=>{const r=new FileReader();r.onload=()=>ok(r.result);r.readAsDataURL(file);});
+        const b=du.split(",")[1];const m=du.match(/^data:(image\/\w+);/)?.[1]||"image/jpeg";
+
+        // === GEÇİŞ 1: SADECE METİN (güvenilir) ===
+        const textPrompt=`Bu matematik/geometri sorusunun TÜM yazısını bilgisayar yazısına çevir.
+- Soru kökü cümlesi + TÜM şıklar (A, B, C, D, E) eksiksiz
+- Matematik ifadeleri LaTeX: \\\\( \\\\) içinde (örn \\\\( \\angle A=90° \\\\), \\\\( |AB|=3 \\\\), \\\\( \\sqrt{x} \\\\))
+- Sorudaki şeklin/çizimin bulunduğu yere [ŞEKİL] yaz
+- Soru numarasını ATLA
+- JSON KULLANMA, açıklama/başlık YAZMA, kod bloğu veya backtick KULLANMA. SADECE çevrilmiş düz metni döndür.`;
+        const raw1=await callAI([{type:"image",source:{type:"base64",media_type:m,data:b}},{type:"text",text:textPrompt}],"gemini-2.5-flash");
+        // 1. geçiş artık DÜZ METİN — LaTeX backslash'ları JSON'u bozmuyor. AI yine JSON sararsa güvenli ayıkla.
+        let html="";
+        {
+          let t1=(raw1||"").trim().replace(/^```(?:json|latex|text)?\s*/i,"").replace(/\s*```$/i,"").trim();
+          if(t1.charAt(0)==="{"&&/text/i.test(t1.slice(0,40))){
+            try{const j1=parseJ(t1);html=(j1.text||j1.html||(j1.questions&&j1.questions[0])||"").trim();}catch(_){html=t1;}
+          }else{html=t1;}
+          // KaTeX tek-backslash delimiter ister: \\( -> \(
+          html=html.replace(/\\\\\(/g,"\\(").replace(/\\\\\)/g,"\\)").replace(/\\\\\[/g,"\\[").replace(/\\\\\]/g,"\\]");
+          // Satir sonlarini <br> yap (dangerouslySetInnerHTML ile basiliyor)
+          html=html.replace(/\r\n/g,"\n").replace(/\n{2,}/g,"<br><br>").replace(/\n/g,"<br>");
+        }
+        // Yazı gerçekten okundu mu? (şekil yer tutucusu/br hariç)
+        const hadText=html.replace(/\[ŞEKİL\]/g,"").replace(/<br\s*\/?>/gi," ").trim().length>0;
+
+        // === GEÇİŞ 2: SADECE ŞEKİL KONUMU (ayrı, güvenilir) ===
+        let figures=[];
+        try{
+          const boxPrompt=`Bu görselde geometrik şekil, üçgen, çember, grafik, diyagram veya çizim VAR MI?
+Varsa konumunu bounding box olarak ver. Format: [ymin, xmin, ymax, xmax], değerler 0-1000 arası (ymin=üst, xmin=sol, ymax=alt, xmax=sağ). Şekil etrafında biraz boşluk bırak.
+JSON: {"figures":[{"box":[ymin,xmin,ymax,xmax]}]}
+Şekil yoksa: {"figures":[]}
+Backtick KULLANMA.`;
+          const raw2=await callAI([{type:"image",source:{type:"base64",media_type:m,data:b}},{type:"text",text:boxPrompt}],"gemini-2.5-flash");
+          const j2=parseJ(raw2);
+          figures=j2.figures||[];
+        }catch(_){figures=[];}
+
+        let figureAdded=false;
+        // Şekilleri orijinal görselden kırp
+        if(figures&&figures.length){
+          const img=await new Promise((ok,no)=>{const im=new Image();im.onload=()=>ok(im);im.onerror=no;im.src=du;});
+          const W=img.naturalWidth,H=img.naturalHeight;
+          for(const fig of figures){
+            const box=fig.box||fig;if(!box||box.length<4)continue;
+            let[ymin,xmin,ymax,xmax]=box;
+            // Sıra hatası düzelt (bazen xmin>xmax gelebilir)
+            if(xmin>xmax)[xmin,xmax]=[xmax,xmin];
+            if(ymin>ymax)[ymin,ymax]=[ymax,ymin];
+            const x=Math.max(0,Math.round(xmin/1000*W));
+            const y=Math.max(0,Math.round(ymin/1000*H));
+            const w=Math.min(W-x,Math.round((xmax-xmin)/1000*W));
+            const h=Math.min(H-y,Math.round((ymax-ymin)/1000*H));
+            if(w<10||h<10)continue;
+            const cv=document.createElement("canvas");cv.width=w;cv.height=h;
+            const cctx=cv.getContext("2d",{willReadFrequently:true});
+            cctx.drawImage(img,x,y,w,h,0,0,w,h);
+            // Beyazlatma — karanlık fotoğraf arka planını temiz beyaza çevir (adaptif eşik)
+            try{
+              const id=cctx.getImageData(0,0,w,h);const d=id.data;const N=w*h;
+              const gray=new Float32Array(N);
+              for(let p=0,q=0;p<d.length;p+=4,q++)gray[q]=d[p]*0.299+d[p+1]*0.587+d[p+2]*0.114;
+              const intg=new Float64Array(N);
+              for(let yy=0;yy<h;yy++){let rs=0;for(let xx=0;xx<w;xx++){rs+=gray[yy*w+xx];intg[yy*w+xx]=rs+(yy>0?intg[(yy-1)*w+xx]:0);}}
+              const rad=Math.max(12,Math.round(Math.min(w,h)*0.06));const bias=14;
+              for(let yy=0;yy<h;yy++){for(let xx=0;xx<w;xx++){
+                const x1=xx-rad<0?0:xx-rad,y1=yy-rad<0?0:yy-rad,x2=xx+rad>=w?w-1:xx+rad,y2=yy+rad>=h?h-1:yy+rad;
+                const area=(x2-x1+1)*(y2-y1+1);
+                const A=(y1>0&&x1>0)?intg[(y1-1)*w+(x1-1)]:0,B=(y1>0)?intg[(y1-1)*w+x2]:0,C=(x1>0)?intg[y2*w+(x1-1)]:0,D2=intg[y2*w+x2];
+                const localAvg=(D2-B-C+A)/area;const i2=(yy*w+xx)*4;const gv=gray[yy*w+xx];
+                if(gv>localAvg-bias){d[i2]=255;d[i2+1]=255;d[i2+2]=255;}
+                else{const k=Math.pow(gv/(localAvg+1),1.4);d[i2]=Math.round(d[i2]*k);d[i2+1]=Math.round(d[i2+1]*k);d[i2+2]=Math.round(d[i2+2]*k);}
+                d[i2+3]=255;
+              }}
+              cctx.putImageData(id,0,0);
+            }catch(_){/* beyazlatma başarısızsa ham kırpma kalır */}
+            const figUrl=cv.toDataURL("image/png");
+            const imgTag='<img src="'+figUrl+'" style="max-width:70%;height:auto;display:block;margin:10px auto"/>';
+            if(html.includes("[ŞEKİL]"))html=html.replace("[ŞEKİL]",imgTag);
+            else html+=imgTag;
+            figureAdded=true;
+          }
+        }
+        // Şekil bekleniyordu ([ŞEKİL] yer tutucusu) ama bulunamadı mı?
+        const figureMissing=html.includes("[ŞEKİL]")&&!figureAdded;
+        html=html.replace(/\[ŞEKİL\]/g,"");
+        // YEDEK: Yazı okunamadıysa VEYA şekil bulunamadıysa → tüm soruyu temiz görüntü olarak ver.
+        // Geometri sorusunda yazı tek başına yetersiz; bu sayede şekil+yazı eksiksiz ve birebir gelir.
+        if(!hadText||figureMissing){
+          let whole=du;try{whole=await cleanImage(file);}catch(_){}
+          html='<img src="'+whole+'" style="max-width:100%;height:auto"/>';
+        }
+        if(html.trim()){
+          saveHistory();setQs(p=>[...p,html]);setShow(true);
+        }else{
+          setErr("Soru tanınamadı. Daha net/büyük fotoğraf deneyin veya 'Resim Olarak Ekle' kullanın.");
+        }
+      }catch(ex){
+        setErr("Akıllı çevirme hatası: "+(ex.message==="Failed to fetch"?"Bağlantı kurulamadı":ex.message));
+      }
+    }
+    setHybridBusy(false);
+  };
+  const reconvert=async(i)=>{setConverting(i);try{const raw=await callAI([{type:"text",text:dpr(PROMPT_SCAN)+"\n\nBu soruyu düzelt ve yeniden çevir:\n"+qs[i]}]);const j=parseJ(raw);if(j.questions?.length){saveHistory();const n=[...qs];n[i]=j.questions[0];setQs(n);}}catch(e){}setConverting(null);};
+  const convertImgToText=async(i)=>{const q=qs[i];if(!q||!q.includes('<img'))return;setConverting(i);try{const src=q.match(/src="([^"]+)"/)?.[1];if(src){const b=src.split(",")[1],m=src.match(/^data:(image\/\w+);/)?.[1]||"image/png";const raw=await callAI([{type:"image",source:{type:"base64",media_type:m,data:b}},{type:"text",text:dpr(PROMPT_SCAN)}]);const j=parseJ(raw);if(j.questions?.length){saveHistory();const n=[...qs];n[i]=j.questions[0];setQs(n);}}}catch(e){}setConverting(null);};
   const addTxt=()=>{const ls=txt.split("\n").map(l=>l.trim()).filter(Boolean);if(ls.length){saveHistory();setQs(p=>[...p,...ls]);setTxt("");setShow(true);}};
   const addFromCanvas=(dataUrl)=>{saveHistory();setQs(p=>[...p,'<img src="'+dataUrl+'" style="max-width:100%;height:auto"/>']);setShow(true);setDrawMode(false);};
-  const recognizeFromCanvas=async(dataUrl)=>{setBusy(true);setErr("");try{const b=dataUrl.split(",")[1],m=dataUrl.match(/^data:(image\/\w+);/)?.[1]||"image/png";const raw=await callAI([{type:"image",source:{type:"base64",media_type:m,data:b}},{type:"text",text:PROMPT_FORMULA}]);const j=parseJ(raw);if(j.results?.length){saveHistory();setQs(p=>[...p,...j.results.map(r=>r.text)]);setShow(true);setDrawMode(false);}else setErr("Tanınamadı.");}catch(e){setErr(e.message==="Failed to fetch"?"Bağlantı kurulamadı.":e.message);}setBusy(false);};
+  const recognizeFromCanvas=async(dataUrl)=>{
+    setBusy(true);setErr("");
+    try{
+      const b=dataUrl.split(",")[1];
+      const m=dataUrl.match(/^data:(image\/\w+);/)?.[1]||"image/png";
+      const raw=await callAI([{type:"image",source:{type:"base64",media_type:m,data:b}},{type:"text",text:dpr(PROMPT_FORMULA)}]);
+      const j=parseJ(raw);
+      // Birden fazla yanıt formatını destekle
+      let texts=[];
+      if(j.results&&Array.isArray(j.results)&&j.results.length){
+        texts=j.results.map(r=>typeof r==="string"?r:(r.text||r.html||r.content||""));
+      }else if(j.questions&&Array.isArray(j.questions)&&j.questions.length){
+        texts=j.questions;
+      }else if(j.text){
+        texts=[j.text];
+      }else if(j.html){
+        texts=[j.html];
+      }else if(typeof raw==="string"&&raw.trim().length>0&&!raw.includes("{")){
+        // AI ham metin verdi (JSON değil)
+        texts=[raw.trim()];
+      }
+      texts=texts.filter(t=>t&&t.trim());
+      if(texts.length){
+        saveHistory();
+        setQs(p=>[...p,...texts]);
+        setShow(true);
+        setDrawMode(false);
+      }else{
+        setErr("Tanınamadı. Çizimi daha büyük yapın veya temizleyip tekrar deneyin.");
+      }
+    }catch(e){
+      setErr(e.message==="Failed to fetch"?"Bağlantı kurulamadı.":e.message);
+    }
+    setBusy(false);
+  };
 
-  const printHtml=(title)=>`<!DOCTYPE html><html><head><title>${title||"MathStudio"}</title><link href="${GF}" rel="stylesheet"><style>@page{size:A4;margin:0}*{box-sizing:border-box;margin:0;padding:0}body{margin:0}.pw-break{display:none}.pw-page{page-break-after:always}.pw-page:last-child{page-break-after:auto}.QTE,.QOA{background:none!important;box-shadow:none!important;border:none!important}.QOA:empty{display:none}.QSP,.QIS{display:none!important}${a4css(ff)}${mathCSS()}</style></head><body>${pvRef.current?.outerHTML||""}</body></html>`;
+  // SINAV_PRESETS kaldırıldı — yaprak testten farkı olmadığı için sadeleştirildi
+
+  const printHtml=(title)=>`<!DOCTYPE html><html><head><title>${title||"MathStudio"}</title><link href="${GF}" rel="stylesheet"><style>@page{size:A4;margin:0}*{box-sizing:border-box;margin:0;padding:0}body{margin:0}.pw-break{display:none}.pw-page{page-break-after:always}.pw-page:last-child{page-break-after:auto}.QTE,.QOA{background:none!important;box-shadow:none!important;border:none!important}.QOA:empty{display:none}.QSP,.QIS,.etb,.etb *,.QOA-tools,.q-tools,.pw-tools,.q-del,.q-edit,.q-imgbtn,[contenteditable]{outline:none!important;box-shadow:none!important}.QSP,.QIS,.etb,.QOA-tools,.q-tools,.pw-tools,.q-del,.q-edit,.q-imgbtn,.QXIC{display:none!important}.QTE,.QTE:hover,.QTE:focus,.QOA,.QOA:hover,.QOA:focus{background:transparent!important;box-shadow:none!important;outline:none!important}.QOA:empty,.QOA:empty::before{display:none!important;content:none!important}.HbkE,.HbaE,.HinfE,.HduE,.HdbE,.HzhE,.HsiE,.HhdE{box-shadow:none!important;outline:none!important}body,html,.A4{background:#fff!important}${CMU_FONT_FACE}${a4css(ff)}${mathCSS()}</style></head><body>${pvRef.current?.outerHTML||""}</body></html>`;
   const print=()=>{const w=window.open("","_blank");if(!w)return;w.document.write(printHtml(cfg.konu));w.document.close();setTimeout(()=>w.print(),500);};
   const savePDF=()=>{const w=window.open("","_blank");if(!w)return;w.document.write(printHtml(cfg.konu||"MathStudio"));w.document.close();setTimeout(()=>w.print(),500);};
 
-  const Sec=({n,title,icon,children})=>(
-    <div className="acc">
-      <button className={`acc-h${openSec===n?" acc-on":""}`} onClick={()=>setOpenSec(openSec===n?0:n)}><span className="acc-i">{icon}</span><span className="acc-t">{title}</span><span className="acc-arr">{openSec===n?"▾":"▸"}</span></button>
-      {openSec===n&&<div className="acc-body">{children}</div>}
-    </div>
-  );
+  const[sharing,setSharing]=useState(false);
 
-  return(<div className="ms"><link href={GF} rel="stylesheet"/><style>{uicss()}{a4css("inherit")}{mathCSS()}</style>
-    <header className="hd"><div className="hr"><div className="hl"><div className="hi">∑</div><b className="hn">MathStudio</b></div>
+  // === KaTeX LaTeX RENDER (Aşama 2 — otomatik) ===
+  const[katexRendered,setKatexRendered]=useState(false);
+  const renderKatex=(silent,retries)=>{
+    if(retries===undefined)retries=6;
+    // KaTeX kütüphanesi henüz CDN'den gelmediyse bekle ve tekrar dene
+    if(!window.renderMathInElement){
+      if(retries>0){setTimeout(()=>renderKatex(silent,retries-1),700);return;}
+      if(!silent)alert("KaTeX henüz yüklenmedi. Birkaç saniye bekleyip tekrar deneyin (ilk yüklemede CDN'den gelir).");
+      return;
+    }
+    // Önizleme henüz DOM'a mount olmadıysa bekle
+    if(!pvRef.current){
+      if(retries>0){setTimeout(()=>renderKatex(silent,retries-1),300);return;}
+      if(!silent)alert("Önce sayfaya soru ekleyin.");return;
+    }
+    try{
+      window.renderMathInElement(pvRef.current,{
+        delimiters:[
+          {left:'$$',right:'$$',display:true},
+          {left:'\\[',right:'\\]',display:true},
+          {left:'\\(',right:'\\)',display:false},
+          {left:'$',right:'$',display:false}
+        ],
+        throwOnError:false,
+        ignoredTags:['script','noscript','style','textarea','pre','code'],
+        ignoredClasses:['mf','mr','mi','ml','ms','mp','mmx','katex','katex-html'], // Eski HTML + render edilmişleri tekrar etme
+        // Inline modda da subscript/superscript ALTTA görünsün (\lim, \max, \min, \sup, \inf vb.)
+        // \mathop{...}\limits → operatörü yapar VE alt/üst sınırları zorunlu olarak alt/üste koyar (inline'da bile).
+        macros:{
+          '\\lim':'\\mathop{\\mathrm{lim}}\\limits',
+          '\\liminf':'\\mathop{\\mathrm{lim\\,inf}}\\limits',
+          '\\limsup':'\\mathop{\\mathrm{lim\\,sup}}\\limits',
+          '\\max':'\\mathop{\\mathrm{max}}\\limits',
+          '\\min':'\\mathop{\\mathrm{min}}\\limits',
+          '\\sup':'\\mathop{\\mathrm{sup}}\\limits',
+          '\\inf':'\\mathop{\\mathrm{inf}}\\limits',
+          '\\argmax':'\\mathop{\\mathrm{arg\\,max}}\\limits',
+          '\\argmin':'\\mathop{\\mathrm{arg\\,min}}\\limits'
+        }
+      });
+      setKatexRendered(true);
+    }catch(e){
+      if(!silent)alert("Render hatası: "+e.message);
+    }
+  };
+  // qs değişince veya önizleme açılınca otomatik render (debounced + yeniden denemeli)
+  useEffect(()=>{
+    if(!show||!qs.length)return;
+    const timer=setTimeout(()=>renderKatex(true),300);
+    return()=>clearTimeout(timer);
+  },[qs,show]);
+
+  const sharePages=async()=>{
+    if(!window.html2canvas){alert("Görsel kütüphanesi yüklenemedi. İnternet bağlantınızı kontrol edip sayfayı yenileyin.");return;}
+    if(!pvRef.current){return;}
+    setSharing(true);
+    // Capture sırasında tüm UI iz/placeholder'larını gizle
+    pvRef.current.classList.add("printing");
+    document.body.classList.add("printing");
+    // Aktif odaklı element varsa kaldır (focus glow capture'e girmesin)
+    if(document.activeElement&&document.activeElement.blur)document.activeElement.blur();
+    await new Promise(r=>setTimeout(r,80)); // CSS uygulansın
+    try{
+      const pages=pvRef.current.querySelectorAll('.A4');
+      if(pages.length===0){alert("Paylaşılacak sayfa yok.");setSharing(false);pvRef.current.classList.remove("printing");document.body.classList.remove("printing");return;}
+      const files=[];
+      for(let i=0;i<pages.length;i++){
+        // Sayfayı görsele dönüştür — onclone ile final temizlik
+        const canvas=await window.html2canvas(pages[i],{
+          scale:2,
+          backgroundColor:"#ffffff",
+          useCORS:true,
+          logging:false,
+          onclone:(doc)=>{
+            doc.body.classList.add("printing");
+            // Placeholder'ları zorla yok et
+            doc.querySelectorAll('[data-ph]').forEach(el=>{el.removeAttribute('data-ph');});
+            // Boş QOA'ları kaldır
+            doc.querySelectorAll('.QOA').forEach(el=>{if(!el.textContent.trim())el.remove();});
+            // Kontrol panellerini kaldır
+            doc.querySelectorAll('.QSP,.QIS,.etb,.q-imgbtn,.QXIC,.QOA-tools,.q-tools,.pw-tools,.q-del,.q-edit').forEach(el=>el.remove());
+          }
+        });
+        const blob=await new Promise(r=>canvas.toBlob(r,'image/png',0.95));
+        const fname=(cfg.konu||"MathStudio").replace(/[^a-z0-9_-]/gi,'_')+`_sayfa${i+1}.png`;
+        files.push(new File([blob],fname,{type:'image/png'}));
+      }
+      // Web Share API ile paylaş (mobilde WhatsApp/Telegram/Mail seçeneği gelir)
+      if(navigator.share && navigator.canShare && navigator.canShare({files})){
+        try{
+          await navigator.share({files,title:cfg.konu||"MathStudio",text:"MathStudio - Hazırlanan test"});
+        }catch(e){if(e.name!=='AbortError') console.warn(e);}
+      } else {
+        // Web Share desteklenmiyorsa indir
+        files.forEach(f=>{
+          const url=URL.createObjectURL(f);
+          const a=document.createElement('a');a.href=url;a.download=f.name;a.click();
+          setTimeout(()=>URL.revokeObjectURL(url),1000);
+        });
+        // Masaüstünde WhatsApp Web aç
+        if(!/Mobi|Android|iPhone/i.test(navigator.userAgent)){
+          const conf=confirm("Görseller indirildi. WhatsApp Web'i açıp manuel ekleyebilirsiniz. Açayım mı?");
+          if(conf) window.open("https://web.whatsapp.com","_blank");
+        } else {
+          alert("Görseller indirildi. WhatsApp'ı açıp galeriye eklediğiniz görselleri seçin.");
+        }
+      }
+    }catch(e){
+      console.error(e);
+      alert("Paylaşım hatası: "+e.message);
+    }finally{
+      // Sayfa görünümünü geri getir
+      if(pvRef.current)pvRef.current.classList.remove("printing");
+      document.body.classList.remove("printing");
+    }
+    setSharing(false);
+  };
+
+  // Sec bileşeni modül seviyesine taşındı (input odak kaybını önlemek için)
+
+  return(<div className="ms"><link href={GF} rel="stylesheet"/><style>{CMU_FONT_FACE}{uicss()}{a4css("inherit")}{mathCSS()}</style>
+    <input ref={qImgFileRef} type="file" accept="image/*" style={{display:"none"}} onChange={onQImgFile}/>
+    <header className="hd"><div className="hr"><div className="hl"><div className="hi">∑</div><b className="hn">MathStudio</b><span style={{fontSize:10,color:"#7c3aed",marginLeft:5,fontWeight:700,background:"#f5f3ff",borderRadius:5,padding:"1px 5px"}}>v3 ✦</span>{saveStatus&&<span className="save-ind" style={{fontSize:11,color:saveStatus.startsWith("⚠")?"#c62828":saveStatus.startsWith("✓")?"#2e7d32":"#888",marginLeft:10,fontWeight:500}}>{saveStatus}</span>}</div>
       <div className="hd-acts">
         <button className="hd-btn" onClick={()=>setShowKey(!showKey)} style={{background:GEMINI_KEY?"#e8f5e9":"#fff0f0",color:GEMINI_KEY?"#2e7d32":"#c62828",borderColor:GEMINI_KEY?"#4caf50":"#ef9a9a"}}>{GEMINI_KEY?"🔑":"🔑 Key Gir"}</button>
-        {qs.length>0&&<><button className="hd-btn" onClick={print}>🖨️</button><button className="hd-btn" onClick={savePDF}>📥 PDF</button></>}
+        {qs.length>0&&<button className="hd-btn" onClick={newDoc} title="Yeni belge başlat">🆕</button>}
+        {qs.length>0&&<><button className="hd-btn" onClick={print}>🖨️</button><button className="hd-btn" onClick={savePDF}>📥 PDF</button><button className="hd-btn" onClick={sharePages} disabled={sharing} style={{background:"#25d366",color:"#fff",borderColor:"#1faa53"}} title="WhatsApp / Mail ile paylaş">{sharing?"⏳":"📲 Paylaş"}</button></>}
       </div>
     </div>
     {showKey&&<div style={{padding:"12px 16px",background:"#fffde7",borderBottom:"2px solid #fdd835"}}>
@@ -1735,68 +2849,335 @@ function App(){
       {GEMINI_KEY&&<p style={{fontSize:11,color:"#2e7d32",marginTop:6}}>✅ Key aktif</p>}
     </div>}
     </header>
-    <main className="mn2">
-      <div className="panel">
-        <Sec n={1} title="Döküman Şablonu" icon="📋">
+    <main className={`mn2${uploadSub==="draw"?" mn2-draw":""}`}>
+      <div className={`panel${uploadSub==="draw"?" panel-wide":""}`}>
+        <Sec openSec={openSec} setOpenSec={setOpenSec} highlight={true} n={1} title="✨ SORU EKLE" icon="➕">
+          {err&&<div className="er" style={{margin:"0 0 8px"}}>⚠️ {err}</div>}
+          {busy&&<div className="ld"><div className="lds"/>İşleniyor...</div>}
+          {cleaning&&<div className="ld"><div className="lds"/>Temizleniyor...</div>}
+          {hybridBusy&&<div className="ld" style={{background:"linear-gradient(90deg,#f3e8ff,#fae8ff)",borderColor:"#d8b4fe",color:"#6b21a8"}}><div className="lds" style={{borderTopColor:"#7c3aed"}}/>🧩 Yazı çevriliyor + şekil kırpılıyor...</div>}
+          {/* AŞAMA 1: Yöntem seçimi (boşsa göster) */}
+          {!uploadSub&&<>
+            <div style={{fontSize:12,color:"#555",marginBottom:10,textAlign:"center",fontWeight:500}}>Soruyu nasıl eklemek istersiniz?</div>
+            <div className="add-grid">
+              <button className="add-card add-card-draw" onClick={()=>setUploadSub("draw")}>
+                <span className="add-ic">✏️</span>
+                <span className="add-tt">Elle Çizim</span>
+                <span className="add-ds">Tahta gibi çiz</span>
+              </button>
+              <button className="add-card add-card-cam" onClick={()=>setUploadSub("cam")}>
+                <span className="add-ic">📷</span>
+                <span className="add-tt">Kamera</span>
+                <span className="add-ds">Fotoğraf çek</span>
+              </button>
+              <button className="add-card add-card-file" onClick={()=>setUploadSub("file")}>
+                <span className="add-ic">📁</span>
+                <span className="add-tt">Dosyadan</span>
+                <span className="add-ds">Galeriden seç</span>
+              </button>
+              <button className="add-card add-card-txt" onClick={()=>setUploadSub("txt")}>
+                <span className="add-ic">📝</span>
+                <span className="add-tt">Metin Yaz</span>
+                <span className="add-ds">Klavyeden yaz</span>
+              </button>
+              <button className="add-card add-card-pdf" onClick={()=>setUploadSub("pdf")} style={{gridColumn:"span 2"}}>
+                <span className="add-ic">📄</span>
+                <span className="add-tt">PDF'den Kırp</span>
+                <span className="add-ds">PDF sayfasından şekil/soru kırp ekle</span>
+              </button>
+            </div>
+          </>}
+          {/* AŞAMA 2: Yöntem seçildikten sonra ilgili eylemler.
+              İşlem başlayınca otomatik 4 yöntem ekranına dönülür (setUploadSub("")) */}
+          {uploadSub&&<>
+            {uploadSub==="draw"&&<div>
+              <div className="add-stage-tt">✏️ Çizimi yapın, sonra altta "Çevir" veya "Ekle" butonuna basın:</div>
+              <Canvas
+                onDone={(d)=>{setUploadSub("");recognizeFromCanvas(d);}}
+                busy={busy}
+                onAddAsImage={(d)=>{setUploadSub("");addFromCanvas(d);}}
+              />
+            </div>}
+            {uploadSub==="cam"&&<div>
+              <div className="add-stage-tt">📷 Hangi modda kullanmak istersiniz?</div>
+              <div className="add-actions">
+                <label className={`add-act-btn add-act-text${busy?" wait":""}`}>
+                  <span className="add-act-ic">📝</span>
+                  <span className="add-act-info"><b>Yazıya Çevir</b><small>Yapay zeka soruyu metne çevirir, düzenlenebilir</small></span>
+                  <input type="file" accept="image/*" capture="environment" hidden disabled={busy} onChange={(e)=>{if(e.target.files?.length){setUploadSub("");}scan(e);}}/>
+                </label>
+                <label className={`add-act-btn add-act-img${cleaning?" wait":""}`}>
+                  <span className="add-act-ic">🖼️</span>
+                  <span className="add-act-info"><b>Resim Olarak Ekle</b><small>Fotoğraf temizlenip aynen yerleşir</small></span>
+                  <input type="file" accept="image/*" capture="environment" hidden disabled={cleaning} onChange={(e)=>{if(e.target.files?.length){setUploadSub("");}scanImg(e);}}/>
+                </label>
+              </div>
+            </div>}
+            {uploadSub==="file"&&<div>
+              <div className="add-stage-tt">📁 Dosyayı nasıl kullanmak istersiniz?</div>
+              <div className="add-actions">
+                <label className={`add-act-btn add-act-text${busy?" wait":""}`}>
+                  <span className="add-act-ic">📝</span>
+                  <span className="add-act-info"><b>Seç ve Yazıya Çevir</b><small>Galeriden seç, yapay zeka metne çevirsin</small></span>
+                  <input type="file" accept="image/*" multiple hidden disabled={busy} onChange={(e)=>{if(e.target.files?.length){setUploadSub("");}scan(e);}}/>
+                </label>
+                <label className={`add-act-btn add-act-img${cleaning?" wait":""}`}>
+                  <span className="add-act-ic">🖼️</span>
+                  <span className="add-act-info"><b>Seç ve Resim Olarak Ekle</b><small>Galeriden seç, temizlenip aynen yerleşir</small></span>
+                  <input type="file" accept="image/*" multiple hidden disabled={cleaning} onChange={(e)=>{if(e.target.files?.length){setUploadSub("");}scanImg(e);}}/>
+                </label>
+              </div>
+            </div>}
+            {uploadSub==="txt"&&<div>
+              <div className="add-stage-tt">📝 Klavyeden soru yazın:</div>
+              <textarea className="p-ta" value={txt} onChange={e=>setTxt(e.target.value)} rows={5} placeholder="Soruyu buraya yazın..." style={{width:"100%",minHeight:120,fontSize:14,padding:10}}/>
+              <button className="bo" onClick={()=>{addTxt();setUploadSub("");}} disabled={!txt.trim()} style={{width:"100%",marginTop:8,background:"#1b2a4a",color:"#fff",borderColor:"#1b2a4a",fontSize:14,padding:"10px"}}>Sayfaya Ekle</button>
+            </div>}
+            {uploadSub==="pdf"&&<div>
+              <div className="add-stage-tt" style={{background:"linear-gradient(135deg,#fff3e0,#ffe0b2)",color:"#e65100"}}>📄 PDF'den şekil/soru kırp</div>
+              {!pdfDoc&&<div>
+                <label className="add-act-btn add-act-text" style={{cursor:"pointer"}}>
+                  <span className="add-act-ic">📁</span>
+                  <span className="add-act-info"><b>PDF Dosyası Seç</b><small>Bilgisayardan/galeriden bir PDF açın, sayfasından bölge kırpacaksınız</small></span>
+                  <input type="file" accept="application/pdf" hidden onChange={onPdfFile}/>
+                </label>
+                <div style={{padding:"10px",background:"#fffde7",border:"1px solid #ffd54f",borderRadius:6,marginTop:10,fontSize:11,color:"#854d0e",lineHeight:1.5}}>
+                  💡 <b>Önerilen ücretsiz kaynaklar (telifsiz):</b><br/>
+                  • <b>OpenStax Physics</b>: openstax.org/details/books/physics<br/>
+                  • <b>PhET Simulasyonları</b>: phet.colorado.edu<br/>
+                  • <b>EBA materyalleri</b>: eba.gov.tr<br/>
+                  <br/>
+                  <i>Yüklediğiniz PDF'in kullanım hakları size aittir; uygulama PDF'i sunucuya göndermez, sadece tarayıcınızda görüntüler.</i>
+                </div>
+              </div>}
+              {pdfDoc&&<div>
+                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8,flexWrap:"wrap",fontSize:11}}>
+                  <span style={{flex:1,fontWeight:600,color:"#1b2a4a",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>📄 {pdfFileName}</span>
+                  <button className="p-sb" onClick={closePdf} style={{background:"#fee",color:"#c00",borderColor:"#fcc"}}>✕ Kapat</button>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8,justifyContent:"center"}}>
+                  <button className="p-sb" disabled={pdfPage<=1||pdfBusy} onClick={()=>setPdfPage(p=>Math.max(1,p-1))}>◀ Önceki</button>
+                  <input type="number" min="1" max={pdfTotalPages} value={pdfPage} onChange={e=>setPdfPage(Math.max(1,Math.min(pdfTotalPages,+e.target.value||1)))} style={{width:60,padding:"4px 6px",border:"1.5px solid #d8dce6",borderRadius:5,fontSize:12,textAlign:"center"}}/>
+                  <span style={{fontSize:11,color:"#666"}}>/ {pdfTotalPages}</span>
+                  <button className="p-sb" disabled={pdfPage>=pdfTotalPages||pdfBusy} onClick={()=>setPdfPage(p=>Math.min(pdfTotalPages,p+1))}>Sonraki ▶</button>
+                </div>
+                {pdfBusy&&<div className="ld" style={{margin:"6px 0"}}><div className="lds"/>Sayfa hazırlanıyor...</div>}
+                <div style={{padding:8,background:"#fff8e1",border:"1px dashed #ffd54f",borderRadius:6,marginBottom:8,fontSize:11,color:"#5d4037",textAlign:"center"}}>
+                  ✂️ Kırpmak istediğiniz alanı <b>fareyle/parmakla sürükleyerek</b> seçin
+                </div>
+                <div style={{position:"relative",overflow:"auto",maxHeight:500,border:"1.5px solid #d8dce6",borderRadius:6,background:"#fafafa"}}>
+                  <canvas ref={pdfCanvasRef}
+                    onMouseDown={onPdfMouseDown} onMouseMove={onPdfMouseMove} onMouseUp={onPdfMouseUp} onMouseLeave={onPdfMouseUp}
+                    onTouchStart={onPdfTouchStart} onTouchMove={onPdfTouchMove} onTouchEnd={onPdfTouchEnd}
+                    style={{display:"block",cursor:"crosshair",maxWidth:"100%",height:"auto",touchAction:"none"}}/>
+                  {pdfCropRect&&<div style={{position:"absolute",left:pdfCropRect.x,top:pdfCropRect.y,width:pdfCropRect.w,height:pdfCropRect.h,border:"2px dashed #2563eb",background:"rgba(37,99,235,0.12)",pointerEvents:"none"}}/>}
+                </div>
+                <div style={{display:"flex",gap:6,marginTop:10}}>
+                  <button className="bo" onClick={cropAndAddPdf} disabled={!pdfCropRect||pdfCropRect.w<10} style={{flex:1,background:"#16a34a",color:"#fff",borderColor:"#15803d",fontSize:14,padding:"10px",fontWeight:600}}>✂️ Seçili Alanı Soruya Ekle</button>
+                  {pdfCropRect&&<button className="bo" onClick={()=>setPdfCropRect(null)}>↺ Seçimi Sil</button>}
+                </div>
+              </div>}
+            </div>}
+          </>}
+        </Sec>
+        <Sec openSec={openSec} setOpenSec={setOpenSec} n={2} title="Döküman Şablonu" icon="📋">
           <div className="p-grid">
-            {[["yaprak","📝","Yaprak Test"],["sinav","📄","Sınav Kağıdı"],["konu","📖","Ders Notu"],["kitap","📚","Kitap Sayfası"]].map(([id,ic,nm])=>
+            {[["yaprak","📝","Yaprak Test"],["sinav","📄","Sınav Kağıdı"],["konu","📚","Ders Notu / Konu Anlatımı"]].map(([id,ic,nm])=>
               <button key={id} className={`p-card${tpl===id?" p-on":""}`} onClick={()=>setTpl(id)}><span className="p-ic">{ic}</span><span className="p-nm">{nm}</span></button>
             )}
           </div>
         </Sec>
-        <Sec n={2} title="Döküman Bilgileri" icon="📝">
+        <Sec openSec={openSec} setOpenSec={setOpenSec} n={3} title="Döküman Bilgileri" icon="📝">
+          {/* DERS SEÇİCİ — tüm şablonlarda görünür, AI çevrim için kullanılır */}
+          <div className="p-row" style={{padding:"8px",background:"#f0f9ff",border:"1px solid #7dd3fc",borderRadius:6,marginBottom:10}}>
+            <span className="p-lbl" style={{color:"#075985",fontWeight:700}}>📚 Ders</span>
+            <select className="p-sel" value={cfg.ders||"Matematik"} onChange={e=>uc("ders",e.target.value)} style={{flex:1,fontWeight:600}}>
+              {DERS_LIST.map(d=><option key={d} value={d}>{d}</option>)}
+            </select>
+          </div>
+          {/* Sınav türü preset seçici kaldırıldı — yaprak testten farkı olmadığı için */}
           {tpl==="yaprak"&&<div className="p-form">
             <input placeholder="Konu (MATEMATİK)" value={cfg.konu} onChange={e=>uc("konu",e.target.value)}/>
             <input placeholder="Alt başlık (Konu Testi)" value={cfg.alt} onChange={e=>uc("alt",e.target.value)}/>
             <input placeholder="Test No" value={cfg.no} onChange={e=>uc("no",e.target.value)} className="sm"/>
+            <label className="p-chk" style={{background:"#fff8e1",padding:"6px 8px",borderRadius:6,border:"1px solid #ffd54f"}}><input type="checkbox" checked={cfg.showHeader!==false} onChange={e=>uc("showHeader",e.target.checked)}/> <b>Üst başlığı göster</b> (arka sayfa için kapatın)</label>
             <label className="p-chk"><input type="checkbox" checked={cfg.showInfo!==false} onChange={e=>uc("showInfo",e.target.checked)}/> Ad Soyad / D-Y-B</label>
             <label className="p-chk"><input type="checkbox" checked={cfg.showCevap!==false} onChange={e=>uc("showCevap",e.target.checked)}/> Cevap Anahtarı</label>
           </div>}
-          {tpl==="sinav"&&<div className="p-form"><input placeholder="Okul Adı" value={cfg.okul} onChange={e=>uc("okul",e.target.value)}/><input placeholder="Sınav Başlığı" value={cfg.baslik} onChange={e=>uc("baslik",e.target.value)}/><input placeholder="Süre (dk)" value={cfg.sure} onChange={e=>uc("sure",e.target.value)} className="sm"/></div>}
-          {(tpl==="konu"||tpl==="kitap")&&<div className="p-form"><input placeholder="Ünite" value={cfg.unite} onChange={e=>uc("unite",e.target.value)}/><input placeholder="Başlık" value={cfg.baslik} onChange={e=>uc("baslik",e.target.value)}/><input placeholder="Sayfa No" value={cfg.sayfaNo||""} onChange={e=>uc("sayfaNo",e.target.value)} className="sm"/></div>}
+          {tpl==="sinav"&&<div className="p-form"><input placeholder="Okul Adı" value={cfg.okul} onChange={e=>uc("okul",e.target.value)}/><input placeholder="Sınav Başlığı" value={cfg.baslik} onChange={e=>uc("baslik",e.target.value)}/><input placeholder="Süre (dk)" value={cfg.sure} onChange={e=>uc("sure",e.target.value)} className="sm"/>
+            <div className="p-row"><span className="p-lbl">Şık Sayısı</span><div className="p-btns">{[3,4,5].map(n=><button key={n} className={`p-sb${(cfg.opt||5)===n?" p-on":""}`} onClick={()=>uc("opt",n)}>{n}</button>)}</div></div>
+            <label className="p-chk" style={{background:"#fff8e1",padding:"6px 8px",borderRadius:6,border:"1px solid #ffd54f"}}><input type="checkbox" checked={cfg.showHeader!==false} onChange={e=>uc("showHeader",e.target.checked)}/> <b>Üst başlığı göster</b> (arka sayfa için kapatın)</label>
+            <label className="p-chk"><input type="checkbox" checked={cfg.cevapSatiri===true} onChange={e=>uc("cevapSatiri",e.target.checked)}/> Soruların altına cevap satırı ekle (klasik açık uçlu sınav için)</label>
+          </div>}
+          {tpl==="konu"&&<div className="p-form"><input placeholder="Ünite (örn. 11. Sınıf — Türev)" value={cfg.unite} onChange={e=>uc("unite",e.target.value)}/><input placeholder="Konu Başlığı (örn. Limit Kavramı)" value={cfg.baslik} onChange={e=>uc("baslik",e.target.value)}/><input placeholder="Sayfa No" value={cfg.sayfaNo||""} onChange={e=>uc("sayfaNo",e.target.value)} className="sm"/>
+            <div className="p-row"><span className="p-lbl">Sütun</span><div className="p-btns">{[1,2].map(n=><button key={n} className={`p-sb${(cfg.konuCols||1)===n?" p-on":""}`} onClick={()=>uc("konuCols",n)}>{n} sütun</button>)}</div></div>
+            <label className="p-chk"><input type="checkbox" checked={cfg.sadeBaski===true} onChange={e=>uc("sadeBaski",e.target.checked)}/> Yazdırma için sade görünüm (renkli kutular gri/çizgili olur)</label>
+          </div>}
         </Sec>
-        <Sec n={3} title="Sayfa Düzeni" icon="⚙️">
+        <Sec openSec={openSec} setOpenSec={setOpenSec} n={4} title="Sayfa Düzeni" icon="⚙️">
           <div className="p-row"><span className="p-lbl">Sütun</span><div className="p-btns">{[1,2,3].map(n=><button key={n} className={`p-sb${cols===n?" p-on":""}`} onClick={()=>setCols(n)}>{n}</button>)}</div></div>
           <div className="p-row"><span className="p-lbl">Yazı Stili</span><FontPick v={font} set={setFont}/></div>
           <div className="p-row"><span className="p-lbl">Yazı Boyutu</span><div className="p-sz"><button className="p-sb" onClick={()=>setQSize(s=>Math.max(8,s-0.5))}>−</button><span className="p-sv">{qSize}pt</span><button className="p-sb" onClick={()=>setQSize(s=>Math.min(16,s+0.5))}>+</button></div></div>
           <div className="p-row"><span className="p-lbl">Sayfa başına</span><select className="p-sel" value={perPage} onChange={e=>setPerPage(+e.target.value)}><option value={5}>5</option><option value={8}>8</option><option value={10}>10</option><option value={12}>12</option><option value={15}>15</option><option value={20}>20</option><option value={999}>Tümü</option></select></div>
-          <div className="p-row"><span className="p-lbl">Numara</span><div className="p-btns p-wrap">{[["circle","●1"],["square","■1"],["plain","1)"],["dot","1."],["paren","(1)"],["dash","1-"],["none","—"]].map(([id,label])=><button key={id} className={`p-sb${(cfg.numStyle||"circle")===id?" p-on":""}`} onClick={()=>uc("numStyle",id)}>{label}</button>)}</div></div>
-        </Sec>
-        <Sec n={4} title="Soru Ekle" icon="➕">
-          {err&&<div className="er" style={{margin:"0 0 8px"}}>⚠️ {err}</div>}
-          {busy&&<div className="ld"><div className="lds"/>İşleniyor...</div>}
-          {cleaning&&<div className="ld"><div className="lds"/>Temizleniyor...</div>}
-          <div className="stabs" style={{marginBottom:8}}>
-            <button className={`st${uploadSub==="draw"?" on":""}`} onClick={()=>setUploadSub("draw")}>✏️ Elle Çizim</button>
-            <button className={`st${uploadSub==="cam"?" on":""}`} onClick={()=>setUploadSub("cam")}>📷 Kamera</button>
-            <button className={`st${uploadSub==="file"?" on":""}`} onClick={()=>setUploadSub("file")}>📁 Dosyalar</button>
-            <button className={`st${uploadSub==="txt"?" on":""}`} onClick={()=>setUploadSub("txt")}>📝 Metin</button>
+          <div className="p-row"><span className="p-lbl">Soru arası boşluk</span>
+            <input type="range" min="0" max="120" step="2" value={cfg.qSpace||26} onChange={e=>uc("qSpace",+e.target.value)} style={{flex:1}}/>
+            <span style={{minWidth:42,fontWeight:600,textAlign:"right"}}>{cfg.qSpace||26}px</span>
           </div>
-          {uploadSub==="draw"&&<div>
-            <Canvas onDone={recognizeFromCanvas} busy={busy} onAddAsImage={addFromCanvas}/>
-          </div>}
-          {uploadSub==="cam"&&<div>
-            <div className="scan-btns">
-              <label className={`bup${busy?" wait":""}`}>{busy?"⏳ Çevriliyor...":"📷 Çek ve Yazıya Çevir"}<input type="file" accept="image/*" capture="environment" hidden disabled={busy} onChange={scan}/></label>
-              <label className={`bup bup3${cleaning?" wait":""}`}>{cleaning?"⏳ Ekleniyor...":"🖼️ Çek ve Resim Ekle"}<input type="file" accept="image/*" capture="environment" hidden disabled={cleaning} onChange={scanImg}/></label>
+          <div className="p-row"><span className="p-lbl">Numara</span><div className="p-btns p-wrap">{[["circle","●1"],["square","■1"],["plain","1)"],["dot","1."],["paren","(1)"],["dash","1-"],["none","—"]].map(([id,label])=><button key={id} className={`p-sb${(cfg.numStyle||"circle")===id?" p-on":""}`} onClick={()=>uc("numStyle",id)}>{label}</button>)}</div></div>
+          <div className="p-row"><span className="p-lbl">Sayfaya Yay</span><label className="p-chk" style={{margin:0}}><input type="checkbox" checked={!!cfg.stretch} onChange={e=>uc("stretch",e.target.checked)}/> Soruları sayfaya eşit dağıt</label></div>
+          {cols>=2&&<div className="p-row"><span className="p-lbl">Dikey yazı</span><input className="p-sel" placeholder="Sütunlar arası kurum/okul adı" value={cfg.divText||""} onChange={e=>uc("divText",e.target.value)} style={{flex:1}}/></div>}
+          <div className="p-row" style={{flexDirection:"column",alignItems:"stretch",gap:6,padding:"8px",background:"#fff8e1",border:"1px solid #ffd54f",borderRadius:6}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}><span className="p-lbl">💧 Filigran</span>
+              <input className="p-sel" placeholder="TASLAK / ÖRNEK / okul adı..." value={cfg.watermark||""} onChange={e=>uc("watermark",e.target.value)} style={{flex:1}}/>
             </div>
-          </div>}
-          {uploadSub==="file"&&<div>
-            <div className="scan-btns">
-              <label className={`bup${busy?" wait":""}`}>{busy?"⏳ Çevriliyor...":"📄 Seç ve Yazıya Çevir"}<input type="file" accept="image/*" multiple hidden disabled={busy} onChange={scan}/></label>
-              <label className={`bup bup3${cleaning?" wait":""}`}>{cleaning?"⏳ Ekleniyor...":"🖼️ Seç ve Resim Ekle"}<input type="file" accept="image/*" multiple hidden disabled={cleaning} onChange={scanImg}/></label>
-              <label className={`bup bup4${busy?" wait":""}`}>{busy?"⏳ Düzenleniyor...":"📖 Seç ve Ders Notu Yap"}<input type="file" accept="image/*" multiple hidden disabled={busy} onChange={scanBook}/></label>
-            </div>
-          </div>}
-          {uploadSub==="txt"&&<div>
-            <div style={{display:"flex",gap:6,alignItems:"flex-start"}}>
-              <textarea className="p-ta" value={txt} onChange={e=>setTxt(e.target.value)} rows={3} placeholder="Soruyu klavyeden yazın..."/>
-              <button className="p-tb" onClick={addTxt} disabled={!txt.trim()}>Ekle</button>
-            </div>
-          </div>}
+            {cfg.watermark&&<>
+              <div style={{display:"flex",alignItems:"center",gap:8,fontSize:11}}>
+                <span style={{color:"#666",minWidth:60}}>Opaklık</span>
+                <input type="range" min="3" max="30" step="1" value={cfg.watermarkOpacity||10} onChange={e=>uc("watermarkOpacity",+e.target.value)} style={{flex:1}}/>
+                <span style={{minWidth:30,fontWeight:600}}>{cfg.watermarkOpacity||10}%</span>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:8,fontSize:11}}>
+                <span style={{color:"#666",minWidth:60}}>Boyut</span>
+                <input type="range" min="20" max="120" step="2" value={cfg.watermarkSize||64} onChange={e=>uc("watermarkSize",+e.target.value)} style={{flex:1}}/>
+                <span style={{minWidth:30,fontWeight:600}}>{cfg.watermarkSize||64}pt</span>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:8,fontSize:11}}>
+                <span style={{color:"#666",minWidth:60}}>Açı</span>
+                <input type="range" min="-90" max="90" step="5" value={cfg.watermarkAngle!==undefined?cfg.watermarkAngle:-30} onChange={e=>uc("watermarkAngle",+e.target.value)} style={{flex:1}}/>
+                <span style={{minWidth:30,fontWeight:600}}>{cfg.watermarkAngle!==undefined?cfg.watermarkAngle:-30}°</span>
+              </div>
+              <label className="p-chk" style={{margin:0,fontSize:11}}><input type="checkbox" checked={cfg.watermarkPrint!==false} onChange={e=>uc("watermarkPrint",e.target.checked)}/> Yazıcı çıktısında da göster</label>
+            </>}
+          </div>
         </Sec>
+        <Sec openSec={openSec} setOpenSec={setOpenSec} n={5} title={`🗂️ Soru Bankası (${bank.length})`} icon="🗂️">
+          <input ref={importBankRef} type="file" accept="application/json" style={{display:"none"}} onChange={onImportBankFile}/>
+          <div style={{display:"flex",gap:6,marginBottom:8,flexWrap:"wrap"}}>
+            <button className="p-sb" onClick={exportBank} disabled={!bank.length} title="Bankayı JSON olarak indir">📥 Yedekle</button>
+            <button className="p-sb" onClick={importBank} title="JSON dosyasından soru yükle">📤 İçe Aktar</button>
+            {bank.length>0&&<button className="p-sb" onClick={clearBank} style={{background:"#ffebee",color:"#c62828",borderColor:"#ef9a9a"}} title="Tüm bankayı sil">🗑️ Tümünü sil</button>}
+          </div>
+          <div style={{padding:8,background:"#f5f7fa",borderRadius:6,marginBottom:8,fontSize:11,color:"#555"}}>
+            <b>Etiket varsayılanı:</b> Aşağıda seçtiğiniz değerler "Bankaya Ekle" butonuyla yeni eklenenlere uygulanır.
+          </div>
+          <div className="p-row"><span className="p-lbl">Ders</span>
+            <select className="p-sel" value={bankMeta.subject} onChange={e=>setBankMeta(m=>({...m,subject:e.target.value}))}>
+              {["Matematik","Fizik","Kimya","Biyoloji","Türkçe","Sosyal","Diğer"].map(s=><option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div className="p-row"><span className="p-lbl">Sınıf</span>
+            <select className="p-sel" value={bankMeta.grade} onChange={e=>setBankMeta(m=>({...m,grade:e.target.value}))}>
+              {["5","6","7","8","9","10","11","12","Genel"].map(g=><option key={g} value={g}>{g}</option>)}
+            </select>
+          </div>
+          <div className="p-row"><span className="p-lbl">Konu</span>
+            <input className="p-sel" placeholder="Limit, Türev, Vektör..." value={bankMeta.topic} onChange={e=>setBankMeta(m=>({...m,topic:e.target.value}))} style={{flex:1}}/>
+          </div>
+          <div className="p-row"><span className="p-lbl">Zorluk</span>
+            <div className="p-btns">
+              {["Kolay","Orta","Zor"].map(d=><button key={d} className={`p-sb${bankMeta.difficulty===d?" p-on":""}`} onClick={()=>setBankMeta(m=>({...m,difficulty:d}))}>{d}</button>)}
+            </div>
+          </div>
+          {qs.length>0&&<button className="bo" style={{background:"#e3f2fd",color:"#0d47a1",borderColor:"#90caf9",marginTop:8,width:"100%"}} onClick={addAllToBank}>📋 Sayfadaki tüm soruları bankaya ekle ({qs.length})</button>}
+          <hr style={{margin:"14px 0",border:"none",borderTop:"1px solid #ddd"}}/>
+          <div style={{fontWeight:600,fontSize:12,color:"#1b2a4a",marginBottom:6}}>🔍 BANKA FİLTRELEME</div>
+          <input className="p-sel" placeholder="Soru içinde ara..." value={bankFilter.search} onChange={e=>setBankFilter(f=>({...f,search:e.target.value}))} style={{width:"100%",marginBottom:6}}/>
+          <div className="p-row"><span className="p-lbl">Ders</span>
+            <select className="p-sel" value={bankFilter.subject} onChange={e=>setBankFilter(f=>({...f,subject:e.target.value}))}>
+              <option value="">Tümü</option>
+              {["Matematik","Fizik","Kimya","Biyoloji","Türkçe","Sosyal","Diğer"].map(s=><option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div className="p-row"><span className="p-lbl">Sınıf</span>
+            <select className="p-sel" value={bankFilter.grade} onChange={e=>setBankFilter(f=>({...f,grade:e.target.value}))}>
+              <option value="">Tümü</option>
+              {["5","6","7","8","9","10","11","12","Genel"].map(g=><option key={g} value={g}>{g}</option>)}
+            </select>
+          </div>
+          <div className="p-row"><span className="p-lbl">Konu</span>
+            <input className="p-sel" placeholder="(boş = tümü)" value={bankFilter.topic} onChange={e=>setBankFilter(f=>({...f,topic:e.target.value}))} style={{flex:1}}/>
+          </div>
+          <div className="p-row"><span className="p-lbl">Zorluk</span>
+            <div className="p-btns">
+              {["","Kolay","Orta","Zor"].map(d=><button key={d||"all"} className={`p-sb${bankFilter.difficulty===d?" p-on":""}`} onClick={()=>setBankFilter(f=>({...f,difficulty:d}))}>{d||"Tümü"}</button>)}
+            </div>
+          </div>
+          <div style={{fontSize:11,color:"#666",margin:"6px 0"}}>{filteredBank.length} / {bank.length} soru</div>
+          {filteredBank.length>0&&<button className="bo" style={{background:"#e8f5e9",color:"#1b5e20",borderColor:"#a5d6a7",width:"100%",marginBottom:8}} onClick={()=>addFilteredToPage(filteredBank)}>➕ Filtredeki {filteredBank.length} soruyu sayfaya ekle</button>}
+          {filteredBank.length>0&&<div style={{display:"flex",gap:6,alignItems:"center",marginBottom:8}}>
+            <input type="number" min="1" max={filteredBank.length} value={randCount} onChange={e=>setRandCount(Math.max(1,+e.target.value||1))} style={{width:60,padding:"6px",border:"1px solid #ffb74d",borderRadius:6,fontSize:13,textAlign:"center",fontWeight:600}}/>
+            <button className="bo" style={{flex:1,background:"#fff3e0",color:"#e65100",borderColor:"#ffb74d"}} onClick={()=>addRandomToPage(filteredBank)}>🎲 Rastgele {Math.min(Math.max(1,randCount),filteredBank.length)} soru çek</button>
+          </div>}
+          <div style={{maxHeight:300,overflowY:"auto",border:"1px solid #e0e0e0",borderRadius:6,background:"#fafafa"}}>
+            {filteredBank.length===0&&<div style={{padding:14,textAlign:"center",color:"#999",fontSize:12}}>Banka boş veya filtreye uyan yok</div>}
+            {filteredBank.slice(0,50).map(it=><div key={it.id} style={{padding:8,borderBottom:"1px solid #eee",background:"#fff"}}>
+              <div style={{display:"flex",gap:4,marginBottom:4,flexWrap:"wrap"}}>
+                <span style={{fontSize:9,padding:"1px 5px",background:"#e3f2fd",color:"#0d47a1",borderRadius:8}}>{it.subject}</span>
+                <span style={{fontSize:9,padding:"1px 5px",background:"#fff3e0",color:"#e65100",borderRadius:8}}>{it.grade}. sınıf</span>
+                {it.topic&&<span style={{fontSize:9,padding:"1px 5px",background:"#f3e5f5",color:"#4a148c",borderRadius:8}}>{it.topic}</span>}
+                <span style={{fontSize:9,padding:"1px 5px",background:it.difficulty==="Kolay"?"#e8f5e9":it.difficulty==="Zor"?"#ffebee":"#fff8e1",color:it.difficulty==="Kolay"?"#1b5e20":it.difficulty==="Zor"?"#b71c1c":"#f57c00",borderRadius:8}}>{it.difficulty}</span>
+              </div>
+              <div style={{fontSize:11,color:"#333",lineHeight:1.4,maxHeight:50,overflow:"hidden",marginBottom:4}} dangerouslySetInnerHTML={{__html:(it.html||"").substring(0,200)+(it.html&&it.html.length>200?"...":"")}}/>
+              <div style={{display:"flex",gap:4}}>
+                <button className="p-sb" style={{flex:1,fontSize:11}} onClick={()=>addBankItemToPage(it)}>➕ Sayfaya ekle</button>
+                <button className="p-sb" style={{fontSize:11,background:"#ffebee",color:"#c62828",borderColor:"#ef9a9a"}} onClick={()=>removeFromBank(it.id)}>🗑️</button>
+              </div>
+            </div>)}
+            {filteredBank.length>50&&<div style={{padding:8,fontSize:11,color:"#666",textAlign:"center"}}>İlk 50 sonuç gösteriliyor — daha fazla için filtreyi daraltın</div>}
+          </div>
+        </Sec>
+        <Sec openSec={openSec} setOpenSec={setOpenSec} n={6} title="✅ Cevap Anahtarı" icon="✅">
+          <div style={{padding:8,background:"#f0f9ff",borderRadius:6,marginBottom:8,fontSize:11,color:"#555",lineHeight:1.5}}>
+            Her sorunun cevabını yazın (örn. <b>A</b> ya da <b>x=3</b>). Cevaplar yazdırma/PDF çıktısında otomatik <b>Cevap Anahtarı</b> olarak görünür.
+            <br/>Not: Çıktıda görünmesi için <b>Döküman Bilgileri → Cevap Anahtarı</b> kutusu işaretli olmalı (yaprak test ve sınav şablonlarında).
+          </div>
+          {qs.length===0&&<div style={{padding:14,textAlign:"center",color:"#999",fontSize:12}}>Önce sayfaya soru ekleyin.</div>}
+          {qs.length>0&&<>
+            <div style={{maxHeight:340,overflowY:"auto",border:"1px solid #e0e0e0",borderRadius:6,background:"#fafafa"}}>
+              {qs.map((q,i)=>{
+                const preview=(q||"").replace(/<[^>]+>/g," ").replace(/&nbsp;/g," ").replace(/\s+/g," ").trim().slice(0,48);
+                return <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderBottom:"1px solid #eee",background:"#fff"}}>
+                  <b style={{minWidth:24,textAlign:"right",color:"#1b2a4a",fontSize:12}}>{i+1}.</b>
+                  <span style={{flex:1,fontSize:11,color:"#666",overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{preview||"(görsel / şekil)"}</span>
+                  <input value={answers[i]||""} onChange={e=>setAnswers(p=>({...p,[i]:e.target.value}))} placeholder="A / x=3" style={{width:74,padding:"4px 6px",border:"1px solid #cbd5e1",borderRadius:5,fontSize:13,textAlign:"center",fontWeight:600}}/>
+                </div>;
+              })}
+            </div>
+            <button className="p-sb" style={{marginTop:8}} onClick={()=>{if(Object.keys(answers).length&&!confirm("Girilen tüm cevaplar silinsin mi?"))return;setAnswers({});}}>🗑️ Cevapları temizle</button>
+          </>}
+        </Sec>
+        {bankAddIdx!=null&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.5)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={e=>{if(e.target===e.currentTarget)setBankAddIdx(null);}}>
+          <div style={{background:"#fff",borderRadius:12,padding:20,maxWidth:420,width:"90%",boxShadow:"0 10px 40px rgba(0,0,0,.3)"}}>
+            <h3 style={{margin:"0 0 12px 0",color:"#1b2a4a"}}>Bu soruyu bankaya ekle</h3>
+            <div style={{padding:10,background:"#f5f7fa",borderRadius:6,marginBottom:12,fontSize:12,maxHeight:120,overflow:"hidden"}} dangerouslySetInnerHTML={{__html:(qs[bankAddIdx]||"").substring(0,300)}}/>
+            <div className="p-row"><span className="p-lbl">Ders</span>
+              <select className="p-sel" value={bankMeta.subject} onChange={e=>setBankMeta(m=>({...m,subject:e.target.value}))}>
+                {["Matematik","Fizik","Kimya","Biyoloji","Türkçe","Sosyal","Diğer"].map(s=><option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div className="p-row"><span className="p-lbl">Sınıf</span>
+              <select className="p-sel" value={bankMeta.grade} onChange={e=>setBankMeta(m=>({...m,grade:e.target.value}))}>
+                {["5","6","7","8","9","10","11","12","Genel"].map(g=><option key={g} value={g}>{g}</option>)}
+              </select>
+            </div>
+            <div className="p-row"><span className="p-lbl">Konu</span>
+              <input className="p-sel" placeholder="Limit, Türev..." value={bankMeta.topic} onChange={e=>setBankMeta(m=>({...m,topic:e.target.value}))} style={{flex:1}}/>
+            </div>
+            <div className="p-row"><span className="p-lbl">Zorluk</span>
+              <div className="p-btns">
+                {["Kolay","Orta","Zor"].map(d=><button key={d} className={`p-sb${bankMeta.difficulty===d?" p-on":""}`} onClick={()=>setBankMeta(m=>({...m,difficulty:d}))}>{d}</button>)}
+              </div>
+            </div>
+            <div style={{display:"flex",gap:8,marginTop:14}}>
+              <button className="bo" style={{flex:1,background:"#1b2a4a",color:"#fff"}} onClick={confirmAddToBank}>Bankaya Ekle</button>
+              <button className="bo" onClick={()=>setBankAddIdx(null)}>Vazgeç</button>
+            </div>
+          </div>
+        </div>}
+        {/* Eski Soru Ekle bölümü kaldırıldı — yeni vurgulu versiyon yukarıda n={1} */}
+        {/* Çıkmış Sorular Arşivim bölümü kaldırıldı — Soru Bankası'na odaklandık. AI özellikleri ileride bankaya entegre edilecek. */}
         {qs.length>0&&<div className="p-qs">
-          <div className="p-qh">📋 {qs.length} Soru <button className="p-qcl" onClick={()=>{saveHistory();setQs([]);setShow(false);}}>Tümünü Sil</button>{history.length>0&&<button className="p-qu" onClick={undo}>↩</button>}</div>
+          <div className="p-qh">📋 {qs.length} Soru <button className="p-qcl" onClick={()=>{saveHistory();setQs([]);setShow(false);setAnswers({});setQNums({});}}>Tümünü Sil</button>{history.length>0&&<button className="p-qu" onClick={undo}>↩</button>}</div>
           <div className="p-ql">{qs.map((q,i)=><QItem key={`q${i}`} index={i} html={q} onUpdate={(val)=>{const n=[...qs];n[i]=val;setQs(n);}} onDelete={()=>delQ(i)} onCopy={()=>copyQ(i)}
             onReconvert={typeof q==="string"&&q.includes("<img")?()=>convertImgToText(i):()=>reconvert(i)} reconverting={converting===i}
             onDragStart={setDragIdx} onDragOver={setOverIdx} onDrop={handleDrop} dragging={overIdx===i&&dragIdx!==i}/>)}</div>
@@ -1805,11 +3186,11 @@ function App(){
       <div className="preview">
         {qs.length===0?<div className="empty-msg"><div className="empty-icon">📄</div><div className="empty-title">Sayfa boş</div><div className="empty-desc">Sol panelden soru ekleyin</div></div>:
         <div className="pw" ref={pvRef} onClick={e=>{const box=e.target.closest(".ebox,.bk-box,.bk-example,.bk-solve");if(box){const rect=box.getBoundingClientRect();const x=e.clientX-rect.left,y=e.clientY-rect.top;if(x>rect.width-60&&y<22)box.parentNode.removeChild(box);}}}>
-          <EditorToolbar pvRef={pvRef}/>
+          <EditorToolbar pvRef={pvRef} tpl={tpl}/>
           {Array.from({length:Math.ceil(qs.length/perPage)}).map((_,pi)=>{
             const pageQs=qs.slice(pi*perPage,(pi+1)*perPage);
             const tp=Math.ceil(qs.length/perPage);
-            return <div key={pi} className="pw-page">{pi>0&&<div className="pw-break"/>}<Page qs={pageQs} tpl={tpl} cols={cols} cfg={cfg} ff={ff} pageNum={pi+1} totalPages={tp} startNum={pi*perPage+1} qSize={qSize} spacings={spacings} imgSizes={imgSizes} imgOffsets={imgOffsets} onUpdateImgSize={(idx,val)=>{const ri=pi*perPage+idx;setImgSizes(s=>({...s,[ri]:val}));}} onUpdateImgOffset={(idx,val)=>{const ri=pi*perPage+idx;setImgOffsets(s=>({...s,[ri]:val}));}} onUpdateSpacing={(idx,val)=>{const ri=pi*perPage+idx;setSpacings(s=>({...s,[ri]:val}));}} onUpdateQ={(idx,html)=>{const ri=pi*perPage+idx;const n=[...qs];n[ri]=html;setQs(n);}}/></div>;
+            return <div key={pi} className="pw-page">{pi>0&&<div className="pw-break"/>}<Page qs={pageQs} tpl={tpl} cols={cols} cfg={cfg} ff={ff} pageNum={pi+1} totalPages={tp} startNum={pi*perPage+1} qSize={qSize} spacings={spacings} imgSizes={imgSizes} imgOffsets={imgOffsets} imgCrops={imgCrops} qImgs={qImgs} onAddQImg={(idx)=>{const ri=pi*perPage+idx;addQImg(ri);}} onUpdQImgSize={(idx,v)=>{const ri=pi*perPage+idx;updQImgSize(ri,v);}} onUpdQImgOffset={(idx,v)=>{const ri=pi*perPage+idx;updQImgOffset(ri,v);}} onDelQImg={(idx)=>{const ri=pi*perPage+idx;delQImg(ri);}} onAddToBank={(idx)=>{const ri=pi*perPage+idx;addToBank(ri);}} answers={answers} qNums={qNums} onUpdQNum={(idx,v)=>{const ri=pi*perPage+idx;updQNum(ri,v);}} onUpdateImgSize={(idx,val)=>{const ri=pi*perPage+idx;setImgSizes(s=>({...s,[ri]:val}));}} onUpdateImgOffset={(idx,val)=>{const ri=pi*perPage+idx;setImgOffsets(s=>({...s,[ri]:val}));}} onUpdateImgCrop={(idx,side,delta)=>{const ri=pi*perPage+idx;updImgCrop(ri,side,delta);}} onResetImgCrop={(idx)=>{const ri=pi*perPage+idx;resetImgCrop(ri);}} onUpdateSpacing={(idx,val)=>{const ri=pi*perPage+idx;setSpacings(s=>({...s,[ri]:val}));}} onUpdateQ={(idx,html)=>{const ri=pi*perPage+idx;const n=[...qs];n[ri]=html;setQs(n);}}/></div>;
           })}
         </div>}
       </div>
@@ -1821,10 +3202,10 @@ function App(){
 /* ═══ MATH CSS — kesir çizgili, limit altında, integral sınırlı ═══ */
 function mathCSS(){return`
 .mf{display:inline-flex;flex-direction:column;align-items:center;vertical-align:middle;margin:0 3px;line-height:1.1}
-.mfn{padding:2px 6px 3px;border-bottom:1.8px solid #222;text-align:center;font-size:.88em;min-width:12px}
-.mfd{padding:3px 6px 2px;text-align:center;font-size:.88em;min-width:12px}
+.mfn{padding:1px 6px 2px;border-bottom:1px solid #222;text-align:center;font-size:.88em;min-width:12px;line-height:1.25}
+.mfd{padding:2px 6px 1px;text-align:center;font-size:.88em;min-width:12px;line-height:1.25}
 .mf .mf{margin:0 1px}.mf .mf .mfn,.mf .mf .mfd{font-size:.82em;padding:1px 3px}
-.mf .mf .mfn{border-bottom-width:1.2px}
+.mf .mf .mfn{border-bottom-width:0.8px}
 .ml{display:inline-flex;flex-direction:column;align-items:center;vertical-align:baseline;margin:0 2px 0 5px;line-height:1;position:relative;top:0.15em}
 .mlt{font-size:1em;font-style:normal;font-weight:400}
 .mlb{font-size:.62em;color:#333;line-height:1;margin-top:1px;white-space:nowrap}
@@ -1836,15 +3217,20 @@ function mathCSS(){return`
 .msu{font-size:.55em;line-height:1}
 .mss{font-size:1.5em;line-height:.78;font-family:'STIX Two Text','Times New Roman',serif}
 .msl{font-size:.55em;line-height:1}
+/* === KÖK İFADESİ — orijinal basit çalışır hali === */
 .mr{display:inline-flex;align-items:stretch;vertical-align:middle}
 .mrs{font-size:1.2em;line-height:1;font-family:'STIX Two Text','Times New Roman',serif}
 .mrc{border-top:1.5px solid #222;padding:2px 4px 0;display:inline-flex;align-items:center}
+.mr>sup{font-size:0.6em;vertical-align:0.7em;margin-right:-0.4em;color:#222;font-weight:500}
 sup{font-size:.7em;vertical-align:super;line-height:0}
 sub{font-size:.7em;vertical-align:sub;line-height:0}
-.mp{display:inline-flex;align-items:center;vertical-align:middle;margin:4px 2px}
-.mpb{font-family:'STIX Two Text','Times New Roman',serif;font-weight:200;color:#222;line-height:0.9;display:inline-flex;align-items:center;justify-content:center;margin-right:4px;flex-shrink:0}
-.mpc{display:inline-flex;flex-direction:column;gap:1px;padding:5px 0;justify-content:center}
-.mpl{display:block;line-height:1.85;white-space:nowrap;padding:2px 3px}
+.mp{display:inline-flex;align-items:center;vertical-align:middle;margin:4px 2px;white-space:normal}
+.mpb{font-family:'STIX Two Math','STIX Two Text','Cambria Math','Times New Roman',serif;font-weight:300;color:#222;line-height:0.85;display:inline-flex;align-items:center;justify-content:center;margin-right:6px;flex-shrink:0;font-size:1.4em;align-self:stretch;transform:scaleY(2);transform-origin:center;padding:0 2px}
+.mpc{display:inline-flex;flex-direction:column;gap:2px;padding:4px 0;justify-content:center;align-items:flex-start}
+.mpl{display:block;line-height:1.6;white-space:nowrap;padding:1px 2px}
+/* Parçalı fonksiyon — AI'nın hatalı parçalanmış çıktısı için fallback */
+.mp p,.mp div,.mp br{display:inline!important}
+.mp{break-inside:avoid;page-break-inside:avoid}
 .mmx{display:inline-flex;align-items:center;vertical-align:middle;margin:0 3px}
 .mmxb{font-family:'STIX Two Text','Times New Roman',serif;font-weight:200;color:#222;line-height:0.9;display:inline-flex;align-items:center;flex-shrink:0;padding:0 2px}
 .mmxg{display:inline-flex;flex-direction:column;gap:2px;padding:4px 0}
@@ -1863,7 +3249,20 @@ function a4css(ff){return`
 .QDl{width:1.5px;height:100%;background:#d0d0d0;display:block}
 .QDt{writing-mode:vertical-rl;text-orientation:mixed;font-size:7pt;color:#999;letter-spacing:2px;font-weight:600;white-space:nowrap;transform:rotate(180deg);text-align:center;padding:0 2px}
 .QI{margin-bottom:26px;display:flex;gap:10px;align-items:flex-start;page-break-inside:avoid}
+.A4-wm{z-index:0}
+.A4>*:not(.A4-wm){position:relative;z-index:1}
+.wm-screen-only .A4-wm{display:flex}
+@media print{.wm-screen-only .A4-wm{display:none!important}}
+.printing .wm-screen-only .A4-wm{display:none!important}
+.A4-stretch .QC{display:flex;flex-direction:column;justify-content:space-between;min-height:100%}
+.A4-stretch .QI{margin-bottom:0!important}
+.A4-stretch.c1 .QG{flex-direction:column}
+.A4-stretch .QG{align-items:stretch}
 .QN{font-weight:800;font-size:1em;min-width:24px;flex-shrink:0;color:#1b2a4a;padding-top:1px}
+.QNed{cursor:text;outline:none}
+.QNed:hover{box-shadow:0 0 0 1.5px rgba(37,99,235,.5) inset}
+.QNed:focus{box-shadow:0 0 0 2px #2563eb inset}
+.printing .QNed,.QNed.print-hide{box-shadow:none!important;cursor:default!important}
 .QNcirc{background:#1b2a4a;color:#fff;min-width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.92em}
 .QNsq{background:#1b2a4a;color:#fff;min-width:28px;height:28px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:.92em}
 .Tders .QN{color:#2563eb}
@@ -1910,14 +3309,38 @@ function a4css(ff){return`
 .Tduz .Hzh{text-align:center;font-size:16pt;font-weight:800;margin-bottom:18px;padding-bottom:10px;border-bottom:2px solid #eee}
 
 /* ═══ Konu Anlatım Şablonu ═══ */
-.Tkonu{padding:14mm 16mm}
-.Bkh-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
-.Bkh-u{font-size:8.5pt;text-transform:uppercase;letter-spacing:3px;color:#888;font-weight:700}
-.Bkh-pn{font-size:9pt;color:#999;font-weight:600}
-.Bkh-title{font-size:22pt;font-weight:900;color:#1b2a4a;line-height:1.2;margin-bottom:8px;outline:none}
-.Bkh-line{height:4px;background:linear-gradient(90deg,#2563eb,#93c5fd,transparent);border-radius:3px;margin-bottom:20px}
-.Tkonu .QI{margin-bottom:14px}
+/* === DERS NOTU — Profesyonel kitap sayfası tipografisi === */
+.Tkonu{padding:16mm 18mm;line-height:1.75;color:#1a1a1a;font-feature-settings:"liga","kern"}
+.Bkh{margin-bottom:18px;padding-bottom:8px}
+.Bkh-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;font-family:'DM Sans',sans-serif}
+.Bkh-u{font-size:8.5pt;text-transform:uppercase;letter-spacing:3.5px;color:#475569;font-weight:700}
+.Bkh-pn{font-size:9pt;color:#94a3b8;font-weight:600;font-feature-settings:"tnum"}
+.Bkh-title{font-size:24pt;font-weight:900;color:#0f172a;line-height:1.15;margin-bottom:10px;outline:none;letter-spacing:-0.5px;font-family:'STIX Two Text','Cambria',serif}
+.Bkh-line{height:3px;background:linear-gradient(90deg,#1e293b,#475569 30%,#cbd5e1 70%,transparent);border-radius:2px;margin-bottom:24px}
+/* Soru/bölüm aralığı sıkı, kitap gibi */
+.Tkonu .QI{margin-bottom:16px;display:block}
 .Tkonu .QN{display:none}
+.Tkonu .QX{display:block}
+.Tkonu .QT,.Tkonu .QTE{line-height:1.75;font-size:11pt;text-align:justify;hyphens:auto;color:#1a1a1a}
+.Tkonu .QOA{display:none}
+/* Ders notunda paragraflar arası boşluk daha az */
+.Tkonu p{margin:0 0 8px 0;text-indent:0}
+.Tkonu p:first-child{margin-top:0}
+/* Hazır kutular (Tanım, Teorem vb.) daha şık */
+.Tkonu .bk-box{box-shadow:0 1px 3px rgba(0,0,0,.04);transition:box-shadow .2s}
+.Tkonu .bk-example,.Tkonu .bk-solve{box-shadow:0 1px 4px rgba(0,0,0,.05)}
+/* 2 sütun düzeninde sütunlar arası */
+.Tkonu .QG.c2{column-count:1}.Tkonu .QG.c2 .QC{padding:0 8px}.Tkonu .QG.c2 .QC:first-child{padding-left:0;padding-right:14px;border-right:1px solid #e5e7eb}.Tkonu .QG.c2 .QC:last-child{padding-left:14px;padding-right:0}
+/* Sade baskı modu — renksiz, çizgili kutular */
+.A4 .bk-box,.A4 .bk-example,.A4 .bk-solve{transition:none}
+.Tkonu .bk-box,.Tkonu .bk-example,.Tkonu .bk-solve{break-inside:avoid;page-break-inside:avoid}
+/* Sade baskı modu — renkli kutular yerine ince çizgili gri kutular (yazıcı dostu) */
+.A4.sade .bk-box,.A4.sade .bk-example,.A4.sade .bk-solve{background:#fff!important;border:1.2px solid #333!important;border-left:3px solid #333!important;box-shadow:none!important}
+.A4.sade .bk-label{color:#222!important;font-weight:800}
+.A4.sade .bk-ex-head,.A4.sade .bk-sol-head{background:#f5f5f5!important;color:#222!important;border-bottom:1px solid #333!important}
+.A4.sade .bk-formula{background:#fff!important;border:1.2px solid #333!important}
+.A4.sade .Bkh-line{background:#333!important}
+.A4.sade .Bkh-title{color:#000!important}
 .Tkonu .QT{font-size:inherit;line-height:2}
 .Tkonu .QOA{display:none}
 
@@ -1989,8 +3412,13 @@ function a4css(ff){return`
 .bk-tag-prop{background:#16a34a;color:#fff}
 .bk-warn{background:linear-gradient(135deg,#fffbeb,#fef3c7);border:1.5px solid #fcd34d;border-left:5px solid #d97706}
 .bk-tag-warn{background:#d97706;color:#fff}
-.bk-tip{background:linear-gradient(135deg,#ecfdf5,#d1fae5);border:1.5px solid #6ee7b7;border-left:5px solid #059669}
-.bk-tag-tip{background:#059669;color:#fff}
+.bk-tip{background:linear-gradient(135deg,#fff7ed,#ffedd5);border:1.5px solid #fdba74;border-left:5px solid #ea580c}
+.bk-tag-tip{background:#ea580c;color:#fff}
+.bk-note{background:linear-gradient(135deg,#fefce8,#fef9c3);border:1.5px solid #fde047;border-left:5px solid #ca8a04}
+/* Kutu içi etiket (📘 TANIM, ⚠️ DİKKAT vb.) */
+.bk-label{display:inline-block;font-size:8.5pt;font-weight:800;letter-spacing:1.2px;margin-bottom:5px;font-family:'DM Sans',sans-serif;color:#1b2a4a}
+.bk-def .bk-label{color:#2563eb}.bk-thm .bk-label{color:#1b2a4a}.bk-prop .bk-label{color:#16a34a}
+.bk-warn .bk-label{color:#d97706}.bk-tip .bk-label{color:#ea580c}.bk-note .bk-label{color:#ca8a04}
 
 .bk-formula{background:linear-gradient(135deg,#f8faff,#eef3ff);border:1.5px solid #bfdbfe;border-radius:6px;padding:8px 16px;margin:6px 0;text-align:center;font-size:1.1em;line-height:2}
 
@@ -2014,9 +3442,18 @@ function a4css(ff){return`
 .CV{border-top:2.5px solid #1b2a4a;padding-top:8px;margin-top:auto}.CVT{font-size:7pt;font-weight:800;letter-spacing:2px;color:#1b2a4a;margin-bottom:5px}
 .CVG{display:flex;flex-wrap:wrap;gap:4px 12px}.CVR{display:flex;align-items:center;gap:2px}.CVN{font-size:7.5pt;min-width:16px;text-align:right;color:#1b2a4a;margin-right:2px}
 .CVC{width:15px;height:15px;border:1.2px solid #999;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:6pt;color:#666}
+.CVC-on{background:#1b2a4a;color:#fff;border-color:#1b2a4a;font-weight:800}
+.CVA{font-size:8pt;font-weight:700;color:#1b2a4a;padding:0 4px}
 .SF{font-size:9pt;color:#555;border-top:1.5px solid #ccc;padding-top:8px;margin-top:auto;display:flex;justify-content:space-between}
 .PF{font-size:8pt;color:#999;text-align:center;margin-top:auto;padding-top:8px;border-top:1px solid #eee}
-@media print{.A4{page-break-after:always;box-shadow:none;border-radius:0}.A4:last-child{page-break-after:auto}.QTE{background:none!important;box-shadow:none!important}.QOA{background:none!important;box-shadow:none!important}.QOA:empty::before{display:none}.pw-break{display:none}}
+@media print{.A4{page-break-after:always;box-shadow:none;border-radius:0;background:#fff!important}.A4:last-child{page-break-after:auto}.QTE,.QTE:hover,.QTE:focus,.QOA,.QOA:hover,.QOA:focus{background:transparent!important;box-shadow:none!important;outline:none!important}.QOA:empty,.QOA:empty::before{display:none!important;content:none!important}.HbkE,.HbaE,.HinfE,.HduE,.HdbE,.HzhE,.HsiE,.HhdE{box-shadow:none!important;outline:none!important;background:transparent!important}.pw-break{display:none}.hd,.panel,.acc,.bo,.hd-btn,.hd-acts,header.hd,.etb,.QSP,.QIS,.QOA-tools,.q-tools,.pw-tools,.q-del,.q-edit,.q-imgbtn,.QXIC{display:none!important}.mn2{grid-template-columns:1fr!important;display:block!important}.pw{margin:0!important;padding:0!important;background:#fff!important}body,html{background:#fff!important}@page{size:A4;margin:0}}
+/* CAPTURING/PRINTING SINIFI — html2canvas ve yazdırma için sayfayı temizler */
+.printing .QTE,.printing .QTE:hover,.printing .QTE:focus,.printing .QOA,.printing .QOA:hover,.printing .QOA:focus{background:transparent!important;box-shadow:none!important;outline:none!important}
+.printing .QOA:empty,.printing .QOA:empty::before{display:none!important;content:none!important}
+.printing .HbkE,.printing .HbaE,.printing .HinfE,.printing .HduE,.printing .HdbE,.printing .HzhE,.printing .HsiE,.printing .HhdE{box-shadow:none!important;outline:none!important;background:transparent!important}
+.printing .QSP,.printing .QIS,.printing .etb,.printing .QOA-tools,.printing .q-tools,.printing .pw-tools,.printing .q-del,.printing .q-edit,.printing .q-imgbtn,.printing .QXIC{display:none!important}
+.printing .A4{box-shadow:none!important;border:none!important;background:#fff!important}
+.printing [contenteditable]{outline:none!important;background:transparent!important;box-shadow:none!important}
 `;}
 
 /* ═══ UI CSS ═══ */
@@ -2040,6 +3477,96 @@ function uicss(){return`
 @media(max-width:800px){.mn2{flex-direction:column}.panel{width:100%;min-width:auto;max-height:none;border-right:none;border-bottom:1px solid #e0e2e8}.preview{max-height:none}}
 .acc{border-bottom:1px solid #eef0f4}
 .acc-h{width:100%;display:flex;align-items:center;gap:10px;padding:12px 16px;border:none;background:#fff;font-family:inherit;font-size:13px;font-weight:700;color:#1b2a4a;cursor:pointer;transition:background .15s;text-align:left}.acc-h:hover{background:#f8f9fb}
+/* === VURGULU BÖLÜM (Soru Ekle) === */
+.acc-hl{border:2.5px solid #d97706;background:linear-gradient(135deg,#fff8e1 0%,#fef3c7 100%);box-shadow:0 4px 16px rgba(217,119,6,.25);margin:8px;border-radius:12px;overflow:hidden}
+.acc-h-hl{font-size:17px!important;padding:18px 18px!important;background:linear-gradient(135deg,#fcd34d,#f59e0b)!important;color:#7c2d12!important;letter-spacing:.5px;font-weight:800!important;text-shadow:0 1px 0 rgba(255,255,255,.5)}
+.acc-h-hl .acc-i{font-size:24px}
+.acc-h-hl:hover{background:linear-gradient(135deg,#fbbf24,#d97706)!important;color:#7c2d12!important}
+.acc-body-hl{background:#fffefb!important;padding:14px 16px!important}
+/* === SORU EKLE - 4 yöntem grid === */
+.add-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px}
+.add-card{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:18px 8px;border:2px solid #e8eaef;border-radius:12px;background:#fff;cursor:pointer;font-family:inherit;transition:all .18s;min-height:100px}
+.add-card:hover{transform:translateY(-2px);box-shadow:0 4px 14px rgba(0,0,0,.08)}
+.add-ic{font-size:32px;line-height:1}
+.add-tt{font-size:13px;font-weight:700;color:#1b2a4a;margin-top:4px}
+.add-ds{font-size:10px;color:#888;font-weight:500}
+.add-card-draw{border-color:#93c5fd;background:linear-gradient(135deg,#eff6ff,#dbeafe)}
+.add-card-draw:hover{border-color:#2563eb;background:linear-gradient(135deg,#dbeafe,#bfdbfe)}
+.add-card-cam{border-color:#86efac;background:linear-gradient(135deg,#f0fdf4,#dcfce7)}
+.add-card-cam:hover{border-color:#16a34a;background:linear-gradient(135deg,#dcfce7,#bbf7d0)}
+.add-card-file{border-color:#c4b5fd;background:linear-gradient(135deg,#f5f3ff,#ede9fe)}
+.add-card-file:hover{border-color:#7c3aed;background:linear-gradient(135deg,#ede9fe,#ddd6fe)}
+.add-card-txt{border-color:#fcd34d;background:linear-gradient(135deg,#fffbeb,#fef3c7)}
+.add-card-txt:hover{border-color:#d97706;background:linear-gradient(135deg,#fef3c7,#fde68a)}
+/* AI Test Üret CSS sınıfları kaldırıldı */
+.add-card-pdf{border-color:#fb923c;background:linear-gradient(135deg,#fff7ed,#ffedd5)}
+.add-card-pdf:hover{border-color:#ea580c;background:linear-gradient(135deg,#ffedd5,#fed7aa);transform:translateY(-2px)}
+.add-card-pdf .add-tt{color:#9a3412}
+.add-card-pdf .add-ds{color:#c2410c}
+.add-back{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:#f5f6fa;border:1px solid #d8dce6;border-radius:6px;font-family:inherit;font-size:12px;cursor:pointer;color:#555;font-weight:600;margin-bottom:10px;transition:all .15s}
+.add-back:hover{background:#e8eaef;color:#1b2a4a}
+.add-stage-tt{font-size:13px;font-weight:600;color:#1b2a4a;margin-bottom:10px;padding:8px 10px;background:#f0f3ff;border-radius:6px}
+.add-actions{display:flex;flex-direction:column;gap:10px}
+.add-act-btn{display:flex;align-items:center;gap:12px;padding:14px;border:2px solid #d8dce6;border-radius:10px;cursor:pointer;background:#fff;font-family:inherit;transition:all .15s}
+.add-act-btn:hover{border-color:#1b2a4a;box-shadow:0 2px 8px rgba(0,0,0,.06);transform:translateY(-1px)}
+.add-act-btn.wait{opacity:.5;cursor:wait}
+.add-act-ic{font-size:30px;flex-shrink:0;width:40px;text-align:center}
+.add-act-info{display:flex;flex-direction:column;gap:2px;flex:1;text-align:left}
+.add-act-info b{font-size:14px;color:#1b2a4a;font-weight:700}
+.add-act-info small{font-size:11px;color:#888;line-height:1.3}
+.add-act-text{border-color:#86efac;background:linear-gradient(135deg,#f0fdf4,#fff)}
+.add-act-text:hover{border-color:#16a34a}
+.add-act-img{border-color:#c4b5fd;background:linear-gradient(135deg,#f5f3ff,#fff)}
+.add-act-img:hover{border-color:#7c3aed}
+/* === ÇİZİM MODU — panel genişler === */
+.panel-wide{width:780px!important;min-width:600px!important;transition:width .25s ease}
+@media(max-width:800px){.panel-wide{width:100%!important;min-width:auto!important}}
+.cvc{width:100%;height:300px;cursor:crosshair;background:#fff;touch-action:none;display:block}
+
+/* === EDITOR TOOLBAR (sayfa başlığında, metin seçince) === */
+.etb{position:sticky;top:0;z-index:50;background:#fff;border:1px solid #d8dce6;border-radius:8px;padding:6px 8px;margin:0 0 12px;box-shadow:0 2px 8px rgba(0,0,0,.06);display:flex;flex-direction:column;gap:4px}
+.etb-row{display:flex;flex-wrap:wrap;align-items:center;gap:3px}
+.etb-row2{padding-top:6px;border-top:1px dashed #e0e2e8}
+.etb-sep{width:1px;height:20px;background:#e0e2e8;margin:0 4px}
+.etb-l{font-size:10px;color:#888;font-weight:600;padding:0 4px;text-transform:uppercase;letter-spacing:.3px}
+.etb-b{min-width:26px;height:26px;border:1px solid #d8dce6;background:#fff;font-family:inherit;font-size:11px;color:#333;border-radius:4px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;padding:0 6px;transition:all .12s;font-weight:500}
+.etb-b:hover{border-color:#1b2a4a;background:#f0f3f8;color:#1b2a4a}
+.etb-on{background:#1b2a4a!important;color:#fff!important;border-color:#1b2a4a!important}
+.etb-bk{font-size:11px;font-weight:600;padding:0 8px;height:28px}
+.etb-bk-def{border-color:#93c5fd;background:#eff6ff;color:#1e40af}.etb-bk-def:hover{background:#dbeafe;border-color:#2563eb}
+.etb-bk-thm{border-color:#fcd34d;background:#fffbeb;color:#92400e}.etb-bk-thm:hover{background:#fef3c7;border-color:#d97706}
+.etb-bk-prop{border-color:#86efac;background:#f0fdf4;color:#166534}.etb-bk-prop:hover{background:#dcfce7;border-color:#16a34a}
+.etb-bk-warn{border-color:#fca5a5;background:#fef2f2;color:#991b1b}.etb-bk-warn:hover{background:#fee2e2;border-color:#dc2626}
+.etb-bk-tip{border-color:#fdba74;background:#fff7ed;color:#9a3412}.etb-bk-tip:hover{background:#ffedd5;border-color:#ea580c}
+.etb-bk-ex{border-color:#c4b5fd;background:#f5f3ff;color:#5b21b6}.etb-bk-ex:hover{background:#ede9fe;border-color:#7c3aed}
+.etb-bk-sol{border-color:#67e8f9;background:#ecfeff;color:#0e7490}.etb-bk-sol:hover{background:#cffafe;border-color:#0891b2}
+
+/* === MOBİL UYUM (büyük buton/yazı) === */
+@media(max-width:800px){
+  .etb{padding:8px;gap:6px}
+  .etb-b{min-width:30px;height:30px;font-size:12px;padding:0 8px}
+  .etb-bk{height:32px;padding:0 10px;font-size:12px}
+  .etb-l{font-size:11px}
+  .acc-h{font-size:15px;padding:14px 16px}
+  .acc-h-hl{font-size:18px!important;padding:18px 16px!important}
+  .add-grid{gap:8px}
+  .add-card{min-height:120px;padding:20px 6px}
+  .add-ic{font-size:36px}
+  .add-tt{font-size:14px}
+  .add-ds{font-size:11px}
+  .add-act-btn{padding:16px}
+  .add-act-ic{font-size:34px;width:46px}
+  .add-act-info b{font-size:15px}
+  .add-act-info small{font-size:12px}
+  .acc-body{padding:14px 14px}
+  .p-form input{padding:10px 12px;font-size:14px}
+  .p-row{margin-bottom:10px}
+  .p-lbl{font-size:12px}
+  .p-sb{padding:7px 12px;font-size:12px}
+  .p-card{padding:16px 8px}
+  .p-ic{font-size:30px}
+  .p-nm{font-size:12px}
+}
 .acc-on{background:#f0f3ff!important;border-bottom:2px solid #2563eb}
 .acc-i{font-size:16px}.acc-t{flex:1}.acc-arr{font-size:11px;color:#999}
 .acc-body{padding:12px 16px;background:#fafbfd;border-top:1px solid #eef0f4}
@@ -2117,7 +3644,7 @@ function uicss(){return`
 .cclr{width:22px;height:22px;border-radius:50%;border:2px solid #e0e2e8;padding:0;min-width:22px}.cclr.on{border-color:#1b2a4a;box-shadow:0 0 0 2px rgba(27,42,74,.2);transform:scale(1.15)}
 .cbs{width:1px;height:20px;background:#e0e2e8;margin:0 2px}.cbr{width:50px;accent-color:#1b2a4a}
 .cb-chk{display:flex;align-items:center;gap:2px;font-size:9px;color:#888;cursor:pointer;white-space:nowrap}.cb-chk input{width:12px;height:12px;accent-color:#1b2a4a;cursor:pointer}
-.cv-area{position:relative;border:1px solid #d8dce6;border-radius:0 0 8px 8px;overflow:hidden}
+.cv-area{position:relative;border:1px solid #d8dce6;border-radius:0 0 8px 8px;overflow:auto}
 .cv-sel{position:absolute;border:2px dashed #2563eb;background:rgba(37,99,235,.05);pointer-events:none;z-index:3}
 .cvc{width:100%;height:300px;cursor:crosshair;background:#fff;touch-action:none;display:block}
 .cv-txt-wrap{position:absolute;z-index:5}
@@ -2175,60 +3702,11 @@ function uicss(){return`
 .ld{display:flex;align-items:center;gap:6px;margin-top:5px;padding:6px 10px;background:linear-gradient(90deg,#eef3ff,#f0f5ff);border:1px solid #c7d4e8;border-radius:6px;font-size:10px;color:#1b2a4a}
 .lds{width:12px;height:12px;border:2px solid #c7d4e8;border-top-color:#1b2a4a;border-radius:50%;animation:sp .7s linear infinite}
 .er{margin-top:5px;padding:6px 10px;background:linear-gradient(90deg,#fef0f0,#fff5f5);border:1px solid #f0c0c0;border-radius:6px;font-size:10px;color:#c44}
-.rl{margin-top:10px}.rlh{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:11px;color:#333;font-weight:600}
-.rsz{display:flex;align-items:center;gap:3px;margin-left:auto;margin-right:8px}
-.rsb{width:30px;height:26px;border:1px solid #d8dce6;background:#fff;border-radius:5px;font-size:12px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:inherit;color:#555;transition:all .15s}.rsb:hover{border-color:#1b2a4a;color:#1b2a4a;background:#eef3ff}
-.rst{font-size:9px;color:#999;min-width:32px;text-align:center}
-.rc{background:#fff;border:1px solid #e0e2e8;border-radius:8px;padding:12px;margin-bottom:6px;box-shadow:0 1px 4px rgba(0,0,0,.03)}
-.rcm{font-size:18px;line-height:1.7;margin-bottom:8px;color:#111;padding:10px 12px;background:linear-gradient(135deg,#f8f9fb,#f0f2f6);border-radius:6px;border:1px solid #e8eaef}
-.rcl{font-family:monospace;font-size:9px;color:#888;background:#f0f1f5;padding:4px 8px;border-radius:4px;margin-bottom:8px;word-break:break-all}
-.rca{display:flex;gap:5px;flex-wrap:wrap}
-.bcp{padding:7px 14px;border:1.5px solid #1b2a4a;background:#fff;border-radius:7px;font-family:inherit;font-size:11px;font-weight:600;cursor:pointer;color:#1b2a4a;transition:all .15s}.bcp:hover{background:#eef3ff}.bcp.ok{background:#e8f5e9;border-color:#4caf50;color:#2e7d32}
-.bcp2{border-color:#999;color:#666}.bcp2:hover{border-color:#555;color:#333}
-.bcp3{border-color:#2563eb;color:#2563eb;background:linear-gradient(135deg,#f0f5ff,#e8eeff)}.bcp3:hover{background:#dbeafe}
-.bs{padding:3px 7px;border:1px solid #dde;background:#fff;border-radius:3px;font-size:9px;font-family:inherit;cursor:pointer;color:#666}.bs:hover{border-color:#1b2a4a;color:#1b2a4a}.bs.ok{background:#e8f5e9;border-color:#4caf50;color:#2e7d32}
-.ql{display:flex;flex-direction:column;gap:4px;max-height:300px;overflow-y:auto;margin-bottom:6px;padding:2px}
-.qr{display:flex;align-items:center;gap:5px;padding:6px 8px;background:#fff;border-radius:7px;border:1px solid #e0e2e8;transition:all .15s}
-.qr:hover{border-color:#c0c4cc;box-shadow:0 2px 6px rgba(0,0,0,.04)}
-.qr-drag{border-color:#2563eb;background:#eef3ff;border-style:dashed}
-.qhandle{cursor:grab;color:#d0d3da;font-size:14px;flex-shrink:0;user-select:none;padding:0 2px;line-height:1}.qhandle:hover{color:#888}.qr:active .qhandle{cursor:grabbing}
-.qn{min-width:20px;font-size:10px;font-weight:700;color:#bbb;text-align:center;flex-shrink:0}
-.qce{flex:1;font-size:11px;color:#333;line-height:1.6;padding:6px 10px;border-radius:6px;border:1.5px solid #e8eaef;min-height:30px;outline:none;cursor:text;transition:all .2s;background:#fafbfd}
-.qce:focus{border-color:#1b2a4a;background:#fff;box-shadow:0 0 0 3px rgba(27,42,74,.06)}
-.qce:empty::before{content:"Soruyu buraya yazın...";color:#ccc}
-.qth{flex:1;max-height:48px;object-fit:contain;border-radius:4px;background:#fff}
-.qth-html{flex:1;font-size:10px;color:#333;overflow:hidden;max-height:40px;line-height:1.4}
-.qd{width:28px;height:28px;border:1px solid #f0c0c0;background:#fff;color:#d44;font-size:14px;cursor:pointer;flex-shrink:0;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:700;transition:all .15s}.qd:hover{background:#fde0e0;border-color:#d44}
-.qbtns{display:flex;gap:3px;flex-shrink:0}
-.qcp{width:28px;height:28px;border:1px solid #d8dce6;background:#fff;color:#888;font-size:12px;cursor:pointer;border-radius:6px;display:flex;align-items:center;justify-content:center;transition:all .15s}.qcp:hover{background:#eef3ff;border-color:#2563eb;color:#2563eb}
-.bundo{font-size:10px;color:#2563eb;background:linear-gradient(135deg,#eef3ff,#e8eeff);border:1px solid #c7d4e8;border-radius:5px;padding:3px 10px;cursor:pointer;font-family:inherit;font-weight:600;margin-left:6px}.bundo:hover{background:#dbeafe}
-.pa-sep{width:1px;height:18px;background:#d8dce6;margin:0 4px}
-.pa-pp{font-size:9.5px;color:#888;display:flex;align-items:center;gap:4px}.pa-pp select{padding:3px 6px;border:1px solid #d8dce6;border-radius:4px;font-size:9.5px;font-family:inherit}
-.pa-sz{display:flex;align-items:center;gap:3px}
-.pw-page{margin-bottom:20px}.pw-break{height:2px;background:repeating-linear-gradient(90deg,#bbb 0,#bbb 6px,transparent 6px,transparent 12px);margin:12px 0}
-.etb{display:flex;align-items:center;gap:3px;padding:6px 10px;background:linear-gradient(180deg,#fff,#fafbfd);border:1px solid #d8dce6;border-radius:8px;margin-bottom:10px;flex-wrap:wrap;position:sticky;top:0;z-index:10;box-shadow:0 2px 10px rgba(0,0,0,.06)}
-.etb-l{font-size:9px;color:#999;margin-right:5px}
-.etb-b{min-width:28px;height:26px;border:1px solid #e0e2e8;background:#fff;border-radius:5px;font-size:10px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:inherit;color:#555;transition:all .12s;padding:0 5px}.etb-b:hover{border-color:#1b2a4a;color:#1b2a4a;background:#eef3ff}
-.etb-on{border-color:#1b2a4a;background:#eef3ff;font-weight:700}
-.etb-f{font-size:13px;min-width:30px}.etb-c{font-size:10px;min-width:26px}
-.etb-h{font-size:10px;min-width:24px;font-weight:700}
-.etb-bx{font-size:11px;min-width:26px}
-.etb-ins{font-size:9px;min-width:auto;padding:0 6px;white-space:nowrap}
-.etb-bk{background:#f0f3ff;border:1px solid #c7d4e8;border-radius:3px}
-.etb-ud{font-size:14px;min-width:28px;font-weight:700}
-.etb-sep{width:1px;height:20px;background:#e5e6ea;margin:0 3px}
-.qi{align-items:flex-start}
-.qcv{padding:5px 10px;border:1px solid #c7d4e8;background:linear-gradient(135deg,#eef3ff,#e8eeff);color:#2563eb;font-size:10px;font-weight:600;cursor:pointer;border-radius:6px;display:flex;align-items:center;white-space:nowrap;font-family:inherit;transition:all .15s}.qcv:hover{background:#dbeafe;border-color:#2563eb}.qcv:disabled{opacity:.5;cursor:wait}
-.lay{display:flex;flex-direction:column;gap:6px;margin-bottom:6px}
-.lr{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.ll{font-size:9px;font-weight:600;color:#888;min-width:42px}
-.lg{display:flex;gap:3px}.lb{padding:5px 10px;border:1.5px solid #e0e2e8;background:#fff;border-radius:5px;cursor:pointer;font-family:inherit;font-size:10px;color:#666;transition:all .15s}.lb:hover{border-color:#bbc}.lb.on{border-color:#1b2a4a;background:linear-gradient(135deg,#eef3ff,#e8eeff);color:#1b2a4a;font-weight:700}
-.lsm{min-width:30px;text-align:center;padding:5px 8px}
-.lf{gap:4px}.lf input,.lf select{padding:4px 8px;border:1.5px solid #d8dce6;border-radius:5px;font-family:inherit;font-size:10px;flex:1;min-width:0}.lf input:focus{outline:none;border-color:#1b2a4a;box-shadow:0 0 0 3px rgba(27,42,74,.06)}.sm{max-width:60px;flex:none!important}
-.lchk{display:flex;align-items:center;gap:4px;font-size:9.5px;color:#666;white-space:nowrap;cursor:pointer;flex:none}.lchk input{width:15px;height:15px;accent-color:#1b2a4a;cursor:pointer;flex:none}
-.pa{display:flex;gap:5px;margin-top:4px;align-items:center;flex-wrap:wrap}
-.pw{margin-top:10px;overflow-x:auto;display:flex;flex-direction:column;align-items:center;padding-bottom:20px}
-.A4{box-shadow:0 4px 20px rgba(0,0,0,.08);border-radius:3px}
-@media(max-width:700px){.mn{padding:8px}.htn{overflow-x:auto}.htb{white-space:nowrap;font-size:11px;padding:7px 12px}.A4{width:100%;min-height:auto;padding:5mm;font-size:10pt}}
+.rl{margin-top:10px}
+.rlh{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:11px;color:#333;font-weight:600}
+.rli{display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:#fff;border:1px solid #e0e0e0;border-radius:4px;margin-bottom:3px;font-size:10px}
+.rlb{padding:3px 8px;border:1px solid #d0d3da;background:#fff;border-radius:4px;font-size:10px;cursor:pointer;font-family:inherit}
+.save-ind{padding:2px 8px;border-radius:4px;background:rgba(0,0,0,.03)}
 `;}
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
